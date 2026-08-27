@@ -1,0 +1,15 @@
+repos:
+  - repo: local
+    hooks:
+      - id: juplit-sync
+        name: juplit sync
+        entry: juplit sync
+        language: system
+        pass_filenames: false
+        always_run: true
+      - id: juplit-check
+        name: juplit check
+        entry: juplit check
+        language: system
+        pass_filenames: false
+        always_run: true

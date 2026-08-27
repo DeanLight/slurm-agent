@@ -1,0 +1,57 @@
+[project]
+name = "slurm-agent"
+version = "0.1.0"
+description = ""
+authors = [{name = "Dean Light"}]
+requires-python = ">=3.12"
+dependencies = []
+
+[build-system]
+requires = ["uv_build>=0.9.21,<0.10.0"]
+build-backend = "uv_build"
+
+[tool.uv.build-backend]
+module-root = ""
+
+[dependency-groups]
+dev = [
+    "juplit>=0.1.0",
+    "poethepoet>=0.25.0",
+    "ipykernel>=6.0.0",
+    "pre-commit>=3.0.0",
+    "pytest>=8.0.0",
+    "mkdocs>=1.5.0",
+    "mkdocs-material>=9.0.0",
+    "mkdocs-jupyter>=0.24.0",
+    "mkdocstrings[python]>=0.24.0",
+]
+
+[tool.poe.tasks]
+init         = {cmd = "pre-commit install", help = "Install git hooks"}
+sync         = {cmd = "juplit sync", help = "Sync .py<->ipynb for all paired notebooks"}
+nb           = {cmd = "juplit nb",   help = "Generate .ipynb from .py files (run after cloning)"}
+clean        = {cmd = "juplit clean",help = "Sync then delete all .ipynb files"}
+test         = {cmd = "pytest",      help = "Run tests"}
+check        = {cmd = "juplit check", help = "Fail if a committed notebook's outputs contradict its .py"}
+html         = {cmd = "juplit html",  help = "Render a notebook to standalone HTML (nbconvert)"}
+skill        = {shell = "mkdir -p .claude/skills && juplit skill > .claude/skills/juplit-programming.md && echo 'wrote .claude/skills/juplit-programming.md'", help = "Install/refresh the juplit skill for Claude Code"}
+docs         = {cmd = "mkdocs serve",          help = "Serve docs locally for preview"}
+docs-build   = {cmd = "mkdocs build",          help = "Build docs site"}
+docs-deploy  = {cmd = "mkdocs gh-deploy --force", help = "Deploy docs to GitHub Pages"}
+
+[tool.juplit]
+notebook_src_dirs = ["slurm_agent", "docs"]
+
+# Pairs whose .ipynb is committed WITH its outputs, because the outputs are the
+# deliverable (experiment notebooks). Their outputs survive nb / sync / clean, and
+# `juplit check` fails if they stop matching the .py that produced them.
+# Remember to un-ignore each one in .gitignore — see the comment there.
+artifact_notebooks = []   # e.g. ["experiments/**/*.py"]
+
+[tool.jupytext]
+formats = "ipynb,py:percent"
+
+[tool.pytest.ini_options]
+python_files = ["*.py"]
+python_classes = ["Test*"]
+python_functions = ["test_*"]

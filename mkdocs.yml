@@ -1,0 +1,25 @@
+site_name: slurm-agent
+repo_name: DeanLight/slurm-agent
+
+theme:
+  name: material
+  features:
+    - navigation.sections
+    - navigation.top
+    - content.code.copy
+
+plugins:
+  - search
+  - mkdocstrings:
+      handlers:
+        python:
+          paths: [.]
+          options:
+            show_source: true
+            show_root_heading: true
+  - mkdocs-jupyter:
+      include: ["**/*.ipynb"]
+      ignore_h1: false
+
+nav:
+  - Home: index.md

@@ -1,0 +1,12 @@
+# Artifact notebooks are committed WITH their outputs — un-ignore each one you
+# declare in [tool.juplit] artifact_notebooks, e.g.:
+# !experiments/ablation.ipynb
+slurm_agent/**/*.ipynb
+slurm_agent/*.ipynb
+.ipynb_checkpoints/
+.juplit/
+__pycache__/
+*.egg-info/
+.venv/
+dist/
+.env
