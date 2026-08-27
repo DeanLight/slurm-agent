@@ -42,14 +42,28 @@ else is adopted verbatim, names and flags included.
   - *Was:* one `$5.10` column in `agent-status`, and `max_budget_usd` in the agent config
     read as if it covered both.
   - *Now:* `gpu_usd` (observed: GPUs x elapsed x the rate in `cluster.yaml`) and `agent_usd`
-    (the Claude run's own API spend). `max_budget_usd` maps to the CLI's `--max-budget-usd`
-    and caps only the second. The kill thresholds are about the first.
+    (the Claude run's own token spend, priced at API list rates). `max_budget_usd` maps to
+    the CLI's `--max-budget-usd` and caps only the second. The kill thresholds are about
+    the first.
   - *Why:* they are different money with different controls. Conflating them means the
     thresholds that protect \$0.90/GPU-hour get tuned against token spend.
-  - *Consequence:* `agent_usd` is **unknown mid-run** — `claude -p --output-format json`
-    reports cost at exit, not continuously — so `agent-status` shows `—` until the run
-    ends. This costs us nothing, because `--max-budget-usd` enforces the cap inside the
-    CLI whether or not we can see the running total.
+  - *Auth stays the subscription, and the numbers still work.* Verified against the CLI
+    while writing this design: `claude -p --output-format json` returns `total_cost_usd`
+    together with a per-model breakdown carrying **`"costBasis": "list"`** — the CLI prices
+    a run at API list rates and reports it the same way regardless of how the session
+    authenticated. So "track the Claude spend as if it were API spend" is not something
+    this repo has to build; it is what the CLI already reports, and `--max-budget-usd` is
+    a ceiling on that same number. Nothing here needs an API key, and `claude_argv` never
+    emits `--bare` precisely so the Tillicum subscription login is the credential.
+  - *Read it as a runaway guard, not a bill.* Under a subscription the real limit is the
+    plan's usage window, which the CLI does not expose as a number. `max_budget_usd` is
+    therefore the answer to "this agent has gone into a loop", not to "how much did this
+    month cost". Named that way in `agents/*.yaml` comments so nobody reconciles it
+    against an invoice.
+  - *Consequence:* `agent_usd` is **unknown mid-run** — the cost is reported at exit, not
+    continuously — so `agent-status` shows `—` until the run ends. This costs us nothing,
+    because `--max-budget-usd` enforces the cap inside the CLI whether or not we can see
+    the running total.
 - **`no_progress_for` is measured from the notebook, not the status block.**
   - *Was:* `supervision.yaml` had `status_stale_for` (status not updated) and
     `no_progress_for` (status advancing but `cells_done` unchanged) — both read out of the
@@ -61,16 +75,114 @@ else is adopted verbatim, names and flags included.
     dies without updating status (stale), and an agent that keeps talking while doing
     nothing (no progress). Same two keys, same two thresholds — only where the second one
     looks changed.
-- **The agent writes its status block through a shipped one-line command, not by hand.**
-  - *Was:* "The remote agent is told at launch exactly which file is its experiment log …
-    and keeps a small machine-readable status block beside it."
-  - *Now:* a ~30-line `remote_status.py` is copied to the run root at launch, and the
-    launch prompt tells the agent to call
-    `python .slurm-agent/remote_status.py running --round 2/3`.
-  - *Why:* the spec's own Q&A requires the write to be atomic (temp file + rename) so a
-    mid-write kill leaves a readable block. Asking a language model to remember to do an
-    atomic write every round is the least reliable way to get one. The shim also fixes the
-    schema, so the local reader never parses improvised JSON.
+- **The status block is written by a Claude Code hook, and only *enriched* by the agent.**
+  - *Was:* "The remote agent … keeps a small machine-readable status block beside it" —
+    i.e. the agent remembers to write it.
+  - *Was, in the first draft of this design:* a shipped `remote_status.py` shim the agent
+    calls. **That was only half an answer and the review was right to call it out.** A shim
+    fixes *how* a write happens; it does nothing about *whether* it happens, because the
+    agent still has to remember to call it. Two different problems were being conflated.
+  - *Now:* they are separated, and each gets the mechanism that actually solves it.
+    - **Whether it happens — a ****`Stop`**** hook.** Claude Code fires `Stop` at every turn
+      boundary. The hook runs `remote_status.py tick`, which rewrites `updated` and
+      recomputes `cells_done` by counting executed cells in the `.ipynb`. Both are facts
+      about the world, computable without asking the agent anything, so **liveness needs
+      zero cooperation**: `status_stale_for` becomes "this session has not completed a turn
+      in 30 minutes", which is true whether the agent is cooperative, confused, or wedged.
+      A `SessionEnd` hook writes the terminal `finished` / `failed` state the same way.
+    - **Whether it is safe when it happens — the shim.** Atomic write (temp file plus
+      `os.replace`) and a fixed schema, so a mid-write kill leaves a readable block and the
+      local reader never parses improvised JSON. This is the shim's *whole* justification
+      now, and it is a real one — the spec's own Q&A demands the atomic write.
+    - **What it means — the agent.** `round`, `waiting_on`, `needs_env` / `needs_human` are
+      semantic and only the agent knows them, so it still calls
+      `python $SLURM_AGENT_RUN_DIR/remote_status.py running --round 2/3`. The difference is
+      that a forgotten call now costs *detail*, not *detection*.
+  - *Delivery:* the hooks come from a `settings.json` written into the run root and passed
+    as `claude --settings <path>` — never a file inside the staged repo (see the next
+    deviation). This is also the third independent reason `claude_argv` must not emit
+    `--bare`: `--bare` skips hooks entirely, which would silently disable liveness.
+- **Nothing this repo writes ever lands inside a staged repo.**
+  - *Was:* the status block "beside" the notebook, and (in this design's first draft) a
+    `.slurm-agent/` directory referenced by a relative path inside the workdir.
+  - *Now:* the run root on the cluster — `~/.slurm-agent/runs/<session_id>/` — holds
+    `launch.json`, `status.json`, `settings.json`, `remote_status.py`, `agent.log`,
+    `agent.err` and (in batch mode) the rendered `job.sbatch`. The launch prompt and the
+    hooks address them by **absolute** path, exported as `SLURM_AGENT_RUN_DIR`.
+  - *Why:* the review caught this, and it is worse than untidiness. `stage()` refuses to
+    launch onto a dirty tree — that refusal is what stops an experiment silently measuring
+    unreviewed code — so a repo that this tool itself dirties would make its own safety
+    check fire on every second launch. Gitignoring would paper over it; keeping our files
+    out of the tree removes it. The notebook is the one thing we *do* write inside the
+    repo, and that is deliberate: it is the deliverable, and the agent commits it.
+  - *Belt and braces:* `.slurm-agent/` goes in this repo's own `.gitignore` too, for anyone
+    who later puts a run root inside a checkout.
+
+## Two execution modes, because Tillicum allows one interactive job
+
+The review surfaced a cluster constraint neither the spec nor the first draft accounted
+for: **Tillicum permits one interactive allocation at a time.** That single fact reshapes
+the design, and it also makes the batch mode the review asked for necessary rather than
+optional.
+
+### Interactive — one allocation, many agents
+
+The cap is on *allocations*, not on agents. Agents attach to an allocation as
+`srun --jobid=… --overlap` job steps, so **N agents share one allocation**, which is what
+the first draft already did without noticing why it mattered.
+
+What changes:
+
+- `job-up` **refuses to create a second interactive allocation.** It reports the existing
+  one and returns its handle, rather than submitting a request that will queue behind a job
+  the same user is holding.
+- `agent-run` **checks the allocation has spare GPUs** before adding a step. The allocation
+  is sized once, for everyone on it; a fourth agent on a two-GPU allocation is a
+  contention bug that would otherwise present as "the run is mysteriously slow".
+- The `job-status` sketch in the spec, which showed two interactive allocations side by
+  side, was not reachable. It now shows one interactive allocation plus any batch jobs.
+- **An agent never cancels the allocation it is running on** — it is shared, and killing it
+  would take down its neighbours. This is a correction to the review's "tell the agent to
+  close its own job": correct for batch, actively wrong for interactive. Interactive
+  teardown stays the manager's call, and `SessionEnd` only marks the state.
+
+### Batch — for work that should not hold the interactive slot
+
+`sbatch` jobs are not capped the same way, do not need a human present, and end by
+themselves. That makes them the right home for exactly what the review described: overnight
+work, hard work, and anything running in parallel with a human's interactive session.
+
+- `poe agent-batch TASK --agent <kind> --time 12:00:00` stages, renders `job.sbatch` into
+  the run root from a jinja template, and `sbatch`es it.
+- **Self-termination is free here.** The batch script's last statement *is* the `claude -p`
+  run, so the job ends when the agent's process exits. No hook, no reminder, no trust in
+  the agent to tidy up — which is the strongest argument for preferring batch whenever a
+  human does not need a shell on the node.
+- **Everything downstream is unchanged.** Same staging, same `claude_argv`, same run root,
+  same status block, same hooks, same `probe` (`squeue` already returns batch jobs), same
+  `decide`. Batch is a *submission* difference, roughly 40 lines, not a second system.
+- Leases do not apply. A batch job's walltime is a real deadline, so `decide` proposes
+  nothing at the end of one; it escalates if the job hits `TIMEOUT` with the run unfinished.
+
+`AgentConfig.mode: interactive | batch` picks the default per agent kind; the CLI command
+chosen (`agent-run` vs `agent-batch`) overrides it.
+
+### Who tells the human, and when
+
+The review asked for agents to announce their own completion so the manager only speaks
+about failures. That is the right split, and most of it lands cleanly:
+
+- **The agent announces success itself, through GitHub.** It already has a git credential
+  on Tillicum (spec Q&A) and the GitHub MCP, and the spec already says a finished run
+  points the human at its experiment notebook *in its PR*. So "done, wants review" is a PR
+  comment the agent writes — no new credential, no new channel.
+- **The local side speaks only about failures and silences:** crashed, `TIMEOUT`, killed by
+  a threshold, or `finished` with no PR comment (the agent could not announce itself). That
+  is the review's "only tell me if they crashed or could not send the message", and it
+  falls out of `decide` with one extra rule rather than new machinery.
+- **Email from the compute node is *not* designed here.** It would need an SMTP credential
+  or webhook on the shared filesystem, and the spec is explicit that this repo never writes
+  secrets to Tillicum. Flagged for a ruling rather than decided — see Appendix B.
 
 ## 0. Justify existence
 
@@ -150,11 +262,30 @@ The default answer is *don't build it*. What follows is what survived.
   - *Already solved:* `jinja2`, per the Code Guide's never-build-prompts-with-f-strings rule.
   - *Smallest form:* one template file, one `jinja_render` call.
 - **`assets/remote_status.py` — the status shim**
-  - *Needs to exist:* yes — see the deviation above; atomicity cannot be delegated to a
-    prompt.
+  - *Needs to exist:* yes — atomicity and a fixed schema cannot be delegated to a prompt.
+    It is no longer asked to solve *liveness*; the hook below does that.
   - *Already solved:* `tempfile` + `os.replace` in the stdlib.
-  - *Smallest form:* ~30 lines, argparse-free (`sys.argv` positional + `--` flags), zero
-    dependencies, because it runs under whatever Python the experiment repo has.
+  - *Smallest form:* ~45 lines, argparse-free (`sys.argv` positional + `--` flags), zero
+    dependencies, because it runs under whatever Python the experiment repo has. Three
+    verbs: `tick` (hook: refresh `updated`, recount `cells_done`), `finish` (hook: terminal
+    state), and the agent's own `<state> --round … --waiting-on …`.
+- **`assets/hook_settings.json.jinja` — the hooks that make liveness free**
+  - *Needs to exist:* yes. It is what turns `status_stale_for` from "the agent remembered"
+    into "a turn completed", and it is the review's own suggestion.
+  - *Already solved:* entirely, by Claude Code. `Stop` and `SessionEnd` are existing hook
+    events (verified against the installed CLI, alongside `PreToolUse`, `PostToolUse`,
+    `SubagentStop`, `SessionStart`, `UserPromptSubmit`, `Notification`, `PreCompact`), and
+    `--settings <path>` is the documented way to hand a session a settings file. We write
+    JSON; the CLI does the rest.
+  - *Smallest form:* one ~20-line template rendered into the run root. Two hook entries.
+- **`prompts/job.sbatch.jinja` — batch submission**
+  - *Needs to exist:* yes — Tillicum allows one interactive allocation, so anything
+    overnight or parallel has to be a batch job.
+  - *Already solved:* `sbatch` and jinja2. There is no new abstraction: the template emits
+    `#SBATCH` directives and then the same `claude_argv` the interactive path builds.
+  - *Smallest form:* one template plus `launch_batch()` (~40 lines). Batch is a submission
+    difference, not a second system — staging, argv, run root, status, hooks, probe and
+    `decide` are all shared.
 - **`watch.decide` — the supervision rule engine**
   - *Needs to exist:* yes. "Every kill is a rule firing rather than a judgement call" is the
     spec's requirement, and a rule you can't test is a judgement call with extra steps.
@@ -226,9 +357,14 @@ class AgentConfig(BaseModel):
     skills: list[str] = []
     mcp: list[str] = []                  # names resolved against config/mcp.json
     allowed_tools: list[str] = []
-    max_budget_usd: float                # -> claude --max-budget-usd (AGENT spend only)
-    lease: str = "04:00:00"              # supervision interval, not a work estimate
-    max_leases: int = 4
+    max_budget_usd: float                # -> claude --max-budget-usd. A RUNAWAY GUARD on
+                                         # list-priced token spend, not a bill: under a
+                                         # subscription the real limit is the plan window.
+    mode: Literal["interactive", "batch"] = "interactive"
+    lease: str = "04:00:00"              # interactive only: a supervision interval, not a
+                                         # work estimate. Ignored in batch mode.
+    max_leases: int = 4                  # interactive only
+    batch_time: str = "12:00:00"         # batch only: a real deadline, never renewed
     model: str | None = None
 
 
@@ -348,8 +484,14 @@ def job_up(name: str, run: Runner, cluster: ClusterConfig, *, gpus: int, time: s
     salloc --no-shell so the allocation does NOT die with the ssh connection that asked
     for it (spec Q&A: a closed laptop must not take the agent's job with it). Falls back
     to a tmux holder on the login node when cluster.allocation_mode says so.
+
+    Tillicum permits ONE interactive allocation, so this never submits a second: an
+    existing interactive allocation under any name is reported and returned. Agents share
+    it as --overlap job steps; anything that needs its own job goes to batch.
     """
     # existing = first job_list() row named `name` in RUNNING or PENDING -> return it
+    # any OTHER interactive allocation of mine is RUNNING/PENDING -> return it with a
+    #     warning naming it; never submit a second (it would queue behind my own job)
     # build: salloc --no-shell --job-name=NAME --gpus=N --cpus-per-task=C --mem=M
     #        --time=T [--qos=Q] [--account=A]
     # allocation_mode == "tmux" -> wrap as: tmux new-session -d -s NAME 'salloc … '
@@ -385,6 +527,8 @@ def job_errors():
     #                                            allocation_mode: tmux and `poe init`
     # allocation still PENDING after wait_s   -> return the PENDING Job with a warning,
     #                                            never raise: a queued job is not a failure
+    # a different interactive allocation exists -> returned with a warning, not an error;
+    #                                            the cap is a fact to work with, not a fault
     # node_config_path missing                -> FileNotFoundError naming `poe init`
 ```
 
@@ -430,12 +574,15 @@ def staging_errors():
 
 ```python
 def claude_argv(agent: AgentConfig, *, prompt: str, session_id: str,
-                mcp_config_path: str | None, resume: bool = False) -> list[str]:
+                mcp_config_path: str | None, settings_path: str,
+                resume: bool = False) -> list[str]:
     """Build the exact `claude` command line. Pure — this is the audit of what an agent may do.
 
-    Deliberately NOT --bare: --bare restricts Anthropic auth to ANTHROPIC_API_KEY and never
-    reads OAuth, and per the spec's Q&A the Tillicum credential is the user's authenticated
-    subscription. --bare would break every launch.
+    Deliberately NOT --bare, for three independent reasons: it restricts Anthropic auth to
+    ANTHROPIC_API_KEY and never reads OAuth (the Tillicum credential is the user's
+    authenticated subscription, per the spec's Q&A); it skips hooks, which is where
+    liveness comes from; and it skips CLAUDE.md discovery, which is how the staged repo
+    tells the agent its own conventions.
     """
     # ["claude", "-p", prompt,
     #  "--session-id", session_id,          # WE choose it, so it is the handle everywhere
@@ -443,6 +590,7 @@ def claude_argv(agent: AgentConfig, *, prompt: str, session_id: str,
     #  "--permission-mode", "dontAsk",      # no interactive prompt can ever block the run
     #  "--max-budget-usd", str(agent.max_budget_usd),
     #  "--add-dir", agent.workdir,
+    #  "--settings", settings_path,        # the Stop / SessionEnd hooks; see prepare_run
     #  "--allowed-tools", *agent.allowed_tools,
     #  "--mcp-config", mcp_config_path, "--strict-mcp-config",   # if agent.mcp
     #  "--model", agent.model]              # if set
@@ -469,20 +617,58 @@ def launch(agent_name: str, task: str, job_name: str, run: Runner,
     """
     # agent = load(agents/<agent_name>.yaml, AgentConfig)
     # job   = the RUNNING allocation named job_name, else LookupError
-    # sha   = stage(agent, run)
-    # miss  = missing_env(agent, run) -> if miss: raise MissingEnvError(miss, agent.workdir)
-    # session_id = str(uuid4())
-    # run_dir = f"{cluster.run_root}/{session_id}"; mkdir -p it
-    # copy assets/remote_status.py into run_dir (heredoc over ssh, no scp round trip)
-    # write run_dir/launch.json: session_id, task, agent kind, repo, ref, sha, workdir,
-    #     notebook (with {EXP_ID} substituted), job_id, job_name, lease, max_leases,
-    #     leases_used=1, max_budget_usd, launched_at
-    # argv = claude_argv(agent, prompt=launch_prompt(...), session_id=session_id, …)
+    # spare GPUs on `job` >= what this agent needs, else ContentionError naming the
+    #     agents already on it -- one allocation is shared by everyone (see Two execution modes)
+    # session_id, run_dir = prepare_run(agent, task, run, cluster, exp_id)
+    # argv = claude_argv(agent, prompt=…, session_id=session_id, settings=run_dir/settings.json)
     # fire DETACHED so closing the laptop cannot kill it:
     #   setsid nohup srun --jobid=JID --overlap --chdir=WORKDIR
     #       --output=RUN_DIR/agent.log --error=RUN_DIR/agent.err
-    #       bash -lc 'source .envrc 2>/dev/null; exec <argv>' </dev/null &
+    #       bash -lc 'source .envrc 2>/dev/null; export SLURM_AGENT_RUN_DIR=RUN_DIR;
+    #                 exec <argv>' </dev/null &
     # return session_id
+    raise NotImplementedError
+
+
+def prepare_run(agent: AgentConfig, task: str, run: Runner, cluster: ClusterConfig,
+                exp_id: str | None) -> tuple[str, str]:
+    """Stage, preflight, and lay out the run root. Shared by interactive and batch launch.
+
+    Everything this repo writes goes in the run root and NOTHING goes inside the staged
+    repo -- otherwise stage()'s dirty-tree refusal, which is what stops an experiment
+    measuring unreviewed code, would fire on our own leftovers.
+    """
+    # sha  = stage(agent, run)
+    # miss = missing_env(agent, run) -> if miss: raise MissingEnvError(miss, agent.workdir)
+    # session_id = str(uuid4()); run_dir = f"{cluster.run_root}/{session_id}"; mkdir -p
+    # write, all by heredoc over ssh (no scp round trip):
+    #     run_dir/remote_status.py   <- assets/remote_status.py
+    #     run_dir/settings.json      <- render assets/hook_settings.json.jinja:
+    #           Stop       -> python RUN_DIR/remote_status.py tick --notebook <abs .ipynb>
+    #           SessionEnd -> python RUN_DIR/remote_status.py finish --notebook <abs .ipynb>
+    #     run_dir/launch.json        <- session_id, task, agent kind, mode, repo, ref, sha,
+    #           workdir, notebook (abs, {EXP_ID} substituted), job_id/job_name (interactive)
+    #           lease, max_leases, leases_used=1, max_budget_usd, launched_at
+    # return session_id, run_dir
+    raise NotImplementedError
+
+
+def launch_batch(agent_name: str, task: str, run: Runner, cluster: ClusterConfig,
+                 *, exp_id: str | None = None, time: str | None = None) -> str:
+    """Submit the same agent as an sbatch job. Returns the session id.
+
+    For overnight and parallel work: Tillicum caps interactive allocations at one, batch
+    jobs are not capped, and a batch job ENDS WHEN THE AGENT EXITS because the claude run
+    is the script's last statement. Self-termination is structural here, not a promise the
+    agent has to keep.
+    """
+    # session_id, run_dir = prepare_run(...)   # identical to interactive
+    # render prompts/job.sbatch.jinja -> run_dir/job.sbatch:
+    #     #SBATCH --job-name/--gpus/--time/--account/--output=RUN_DIR/agent.log
+    #     cd WORKDIR; source .envrc; export SLURM_AGENT_RUN_DIR=RUN_DIR
+    #     exec <claude_argv>          <- the script's LAST statement, hence self-ending
+    # job_id = run(f"sbatch --parsable {run_dir}/job.sbatch")
+    # record job_id + mode="batch" into launch.json; return session_id
     raise NotImplementedError
 
 
@@ -501,6 +687,8 @@ def launch_errors():
     """Error cases for launch."""
     # missing env vars        -> MissingEnvError listing names + the .envrc path to fix.
     #                            NOTHING is launched. This is the cheap version of needs_env.
+    # no spare GPUs on the shared allocation -> ContentionError naming the agents already
+    #                            on it, and suggesting agent-batch instead
     # dirty / missing workdir -> propagates from stage(); nothing launched
     # job_name not RUNNING    -> LookupError naming `poe job-up`
     # leases_used >= max      -> LeaseExhausted; continue_run escalates to a human instead
@@ -519,8 +707,9 @@ class AgentView(BaseModel):
     model_config = ConfigDict(extra="forbid")
     session_id: str
     task: str
+    mode: Literal["interactive", "batch"]
     job_id: str
-    job_state: Literal["RUNNING", "PENDING", "GONE"]
+    job_state: Literal["RUNNING", "PENDING", "TIMEOUT", "FAILED", "GONE"]
     time_left_s: int | None
     state: Literal["running", "needs_env", "needs_human", "finished", "failed", "unknown"]
     round: str | None
@@ -533,6 +722,7 @@ class AgentView(BaseModel):
     agent_usd: float | None        # None until the run exits; --max-budget-usd caps it meanwhile
     leases_used: int
     max_leases: int
+    announced: bool                # did the agent post its own completion to GitHub?
 
 
 class Decision(BaseModel):
@@ -554,18 +744,28 @@ def decide(view: AgentView, rules: SupervisionConfig, now: float) -> Decision:
     immediately — nobody is appearing in the next four hours), then the three staleness
     rules, then lease renewal, then keep watching.
     """
-    # state == "finished"  -> Decision("escalate", None, "wants review")   # the human's 2nd interrupt
+    # state == "finished" and announced
+    #                      -> Decision("done", None, "finished; the agent announced itself")
+    #        The agent posts its own completion to its PR (it already has the git
+    #        credential and the GitHub MCP). A success that announced itself needs no
+    #        second message -- this is what keeps the human's interrupts down to failures.
+    # state == "finished" and not announced
+    #                      -> Decision("escalate", None, "finished but never announced")
     # state == "failed"    -> Decision("escalate", None, "run failed")
-    # job_state == "GONE" and state == "running"
+    # job_state == "TIMEOUT" and state != "finished"      # batch hit its walltime
+    #                      -> Decision("escalate", None, "batch job timed out unfinished")
+    # job_state in ("GONE","FAILED") and state == "running"
     #                      -> Decision("escalate", None, "job vanished mid-run")
     # state in ("needs_env","needs_human") and blocked longer than rules.blocked_for
     #                      -> Decision("kill", "blocked_for", "waiting on {waiting_on}")
     # status_age_s  > rules.status_stale_for   -> kill, "status_stale_for"
     # notebook_age_s> rules.no_progress_for    -> kill, "no_progress_for"
     # gpu_idle_s    > rules.gpu_idle_for       -> kill, "gpu_idle_for"
-    # time_left_s   < rules.renew_when_time_left:
+    # mode == "interactive" and time_left_s < rules.renew_when_time_left:
     #       leases_used < max_leases -> Decision("renew", None, "lease ending")   # PROPOSED
     #       else                     -> Decision("escalate", None, "lease budget exhausted")
+    #    Batch never renews: its walltime is a real deadline, not a supervision interval,
+    #    so a batch job near its end is watched and its TIMEOUT is handled above.
     # otherwise            -> Decision("watch", None, "round {round}, {time_left} left")
     raise NotImplementedError
 
@@ -578,8 +778,12 @@ def act(decision: Decision, view: AgentView, run: Runner, cluster: ClusterConfig
     the spec is explicit that renewal happens only after somebody reads the status block,
     the log and the notebook, and that is a judgement a threshold cannot make.
     """
-    # kill     -> job_down(job_name); record the rule, the state at the time, and the
-    #             estimated saving; keep_staged means nothing on disk is touched
+    # kill     -> interactive: scancel THIS AGENT'S STEP, not the allocation -- the
+    #             allocation is shared and its other agents must survive. The allocation
+    #             itself is only cancelled when it holds no live steps.
+    #             batch: scancel the job (it is this agent's alone).
+    #             Either way record the rule, the state at the time and the estimated
+    #             saving; keep_staged means nothing on disk is touched.
     # escalate -> notify.send(...) once per (session_id, reason); never twice for the same thing
     # renew    -> auto_renew ? (job_up + continue_run) : print the proposal and keep watching
     # watch    -> nothing
@@ -614,6 +818,8 @@ def watch_errors():
     #     unreadable block must degrade to "stale", not take supervision down.
     # launch.json references a notebook that does not exist -> notebook_age_s=None, and
     #     no_progress_for cannot fire (an absent file is not evidence of a stuck agent)
+    # `announced` is unreadable (GitHub unreachable) -> treat as NOT announced and escalate.
+    #     Erring toward one extra message beats silently dropping a finished run.
     # probe raises            -> log, skip the cycle, keep the loop alive
     # kill target not found   -> LookupError naming the session ids that are live
 ```
@@ -630,8 +836,14 @@ def usage(run: Runner) -> dict:
     raise NotImplementedError
 
 
-def digest(current: dict, ledger_path: Path, cfg: MonitorConfig) -> str | None:
+def digest(current: dict, ledger_path: Path, cfg: MonitorConfig,
+           batch: list[dict] | None = None) -> str | None:
     """The message to send, or None when there is nothing to say.
+
+    `batch` is the sacct rollup of batch jobs that finished since the last digest -- the
+    review asked for the scheduled report to cover how overnight jobs went. It REPORTS
+    them; the scheduled monitor still never acts on the cluster (spec, Out of scope). Kill
+    authority stays with the manager alone.
 
     Silence has to mean 'nothing changed', so a message always means something did. The
     comparison is against the last row that was actually SENT, not the last row observed —
@@ -716,9 +928,14 @@ def check_all(cluster: ClusterConfig, *, create: bool = True) -> list[Check]:
     # run root          : cluster.run_root exists     (create: mkdir -p over ssh)
     # ALLOCATION PROBE  : `salloc --no-shell --time=00:01:00 …` then scancel — does the
     #                     allocation outlive the ssh that asked for it? Sets/echoes
-    #                     allocation_mode. VERIFIES the spec's biggest lease assumption.
+    #                     allocation_mode, and reports whether a SECOND interactive
+    #                     allocation is refused. VERIFIES the biggest lease assumption.
     # AGENT CREDENTIAL  : `ssh HOST 'claude -p "reply OK" --output-format json'` — proves the
-    #                     subscription auth on Tillicum works headlessly, before any GPU spend
+    #                     subscription auth on Tillicum works headlessly, before any GPU
+    #                     spend, AND asserts total_cost_usd > 0: a subscription that reports
+    #                     zero cost would silently disarm --max-budget-usd
+    # BATCH             : `sbatch --test-only` on the rendered template — the partition
+    #                     accepts our walltime, checked without queueing anything
     # notifications     : monitor.yaml present and `to:` set
     # usage monitor     : cron block installed        (report only — never install silently)
     raise NotImplementedError
@@ -747,6 +964,9 @@ def job_shell_cmd(name: str) -> None: ...        # os.execvp — becomes the she
 def job_down_cmd(name: str) -> None: ...
 @app.command(name="agent-run")
 def agent_run_cmd(task: str, job: str, agent: str, exp_id: str | None = None) -> None: ...
+@app.command(name="agent-batch")
+def agent_batch_cmd(task: str, agent: str, time: str | None = None,
+                    exp_id: str | None = None) -> None: ...
 @app.command(name="agent-status")
 def agent_status_cmd() -> None: ...
 @app.command(name="agent-logs")
@@ -825,7 +1045,9 @@ with `if test():` blocks beside each function, per the Code Guide.
   `[tool.pytest.ini_options] norecursedirs = ["slurm_agent/assets"]` so the shipped shim is
   never collected as a test module.
 - `.gitignore` — on `main`; add `!sessions/**/*.ipynb` (the negation, or the session
-  evidence is preserved locally and never committed) and `ledger.jsonl`.
+  evidence is preserved locally and never committed), `ledger.jsonl`, and `.slurm-agent/`
+  (belt and braces — the run root lives on the cluster and outside every checkout, but a
+  stray one inside a repo must never become a commit).
 - `.pre-commit-config.yaml`, `.github/workflows/ci.yml`, `mkdocs.yml`, `docs/index.md` —
   on `main`, unmodified by this design.
 - `slurm_agent/example.py` — **removed** in PR-01; it is the template's placeholder.
@@ -855,8 +1077,8 @@ with `if test():` blocks beside each function, per the Code Guide.
   `update_node_config` (the last two ported from `slurm-ops`, which stays public and
   unchanged per the spec's Q&A).
 - `staging.py` — `stage`, `missing_env`, `DirtyWorkdirError`.
-- `launch.py` — `claude_argv`, `launch_prompt`, `launch`, `continue_run`, `MissingEnvError`,
-  `LeaseExhausted`.
+- `launch.py` — `claude_argv`, `launch_prompt`, `prepare_run`, `launch`, `launch_batch`,
+  `continue_run`, `MissingEnvError`, `LeaseExhausted`, `ContentionError`.
 - `watch.py` — `AgentView`, `Decision`, `views`, `decide`, `act`, `watch`, `kill`.
 - `monitor.py` — `usage`, `digest`, `monitor_run`, `cron_write`, `cron_status`.
 - `notify.py` — `send`.
@@ -866,11 +1088,17 @@ with `if test():` blocks beside each function, per the Code Guide.
 **`slurm_agent/assets/` — new** (shipped data, never imported)
 
 - `probe.sh` — the one-round-trip poll script, piped to `sh -s` on the login node.
-- `remote_status.py` — the ~30-line atomic status writer copied to each run root at launch.
+- `remote_status.py` — the ~45-line atomic status writer copied to each run root at launch;
+  verbs `tick` / `finish` (called by the hooks) and the agent's own `<state> --round …`.
+- `hook_settings.json.jinja` — the `Stop` / `SessionEnd` hook settings rendered into each
+  run root and passed as `claude --settings`.
 
 **`prompts/` — new**
 
-- `agent_launch.md.jinja` — the launch prompt and the mailbox contract.
+- `agent_launch.md.jinja` — the launch prompt and the mailbox contract, including the
+  instruction to announce completion on the task's PR.
+- `job.sbatch.jinja` — the batch submission script; its last statement is the `claude` run,
+  which is what makes a batch job end when its agent does.
 
 **`ssh_config_templates/` — new**
 
@@ -924,6 +1152,8 @@ which case it lives in `tests/`. Every error case in §1 has a bullet here.
 - `job_up` — boundary: `allocation_mode="tmux"` wraps the same `salloc` in
   `tmux new-session -d`.
 - `job_up` — boundary: still PENDING after `wait_s` returns the PENDING `Job`, no raise.
+- `job_up` — boundary: **an existing interactive allocation under a different name is
+  returned with a warning and no second `salloc` is issued** — the one-interactive-job cap.
 - `job_down` — error: an unknown name raises `LookupError` listing the live job names.
 - `update_node_config` — happy: rewrites `Hostname` in a tmp file, leaves other lines intact.
 
@@ -948,6 +1178,24 @@ which case it lives in `tests/`. Every error case in §1 has a bullet here.
 - `claude_argv` — boundary: `mcp: []` omits both `--mcp-config` and `--strict-mcp-config`;
   a non-empty `mcp` emits both together.
 - `claude_argv` — boundary: `resume=True` emits `--resume <session-id>` and keeps the flags.
+- `claude_argv` — boundary: `--settings` points at the run root, and **no argv element and
+  no rendered path is ever inside `agent.workdir`** — the regression guard for "nothing this
+  repo writes lands inside a staged repo".
+- `prepare_run` — happy: writes exactly five files, all under the run root; the fake runner
+  sees no write whose path starts with `agent.workdir`.
+- `prepare_run` — happy: the rendered `settings.json` parses, and its `Stop` and
+  `SessionEnd` hook commands both name the absolute `remote_status.py` and the absolute
+  notebook.
+- `launch_batch` — happy: the rendered `job.sbatch` carries the requested `--time`/`--gpus`
+  and its **last non-comment line is the `claude` invocation** (this is what makes the job
+  self-terminating, so it is asserted, not assumed).
+- `launch` — error: an allocation with no spare GPUs raises `ContentionError` naming the
+  agents already on it; nothing is submitted.
+- `remote_status.py tick` — happy: recomputes `cells_done` from a fixture `.ipynb` and
+  refreshes `updated` **without** touching `round` / `waiting_on` (the hook must not erase
+  what the agent said).
+- `remote_status.py finish` — happy: writes the terminal state; boundary: `tick` on a run
+  whose status file does not exist yet creates a valid one.
 - `launch_prompt` — happy: the rendered prompt contains the task id, the notebook path and
   the `remote_status.py` invocation.
 - `launch` — error: `missing_env` non-empty raises `MissingEnvError` and **nothing is
@@ -974,10 +1222,16 @@ which case it lives in `tests/`. Every error case in §1 has a bullet here.
   - `notebook_age_s` past `no_progress_for` → `kill`, rule `no_progress_for`
   - `gpu_idle_s` past `gpu_idle_for` → `kill`, rule `gpu_idle_for`
   - lease ending with leases left → `renew`; with none left → `escalate`
+  - `finished` **and** announced → `done` (no message: the agent already spoke)
+  - `finished` **and not** announced → `escalate` ("finished but never announced")
+  - `mode="batch"` with `job_state="TIMEOUT"` and unfinished → `escalate`
+  - `mode="batch"` near its walltime → `watch`, never `renew` (a batch deadline is real)
   - a healthy run → `watch`
   - **ordering:** a run that is both `finished` and stale returns `done`/`escalate`, never
     `kill` — a finished run must never be reported as killed for staleness.
 - `act` — happy: a `kill` decision calls `scancel` once and returns a line naming the rule.
+- `act` — boundary: killing one agent on a **shared** allocation cancels its step and
+  leaves the allocation up while another agent is still on it (the neighbour-safety test).
 - `act` — boundary: `renew` **without** `--auto-renew` submits nothing and returns a proposal.
 - `act` — boundary: a repeated `escalate` for the same `(session_id, reason)` notifies once.
 - `watch` — error: `probe` raising `RemoteError` skips the cycle and the loop survives
@@ -992,6 +1246,8 @@ which case it lives in `tests/`. Every error case in §1 has a bullet here.
 - `digest` — boundary: compares against the last **sent** row, not the last observed one —
   three unsent polls then a change still produces a digest.
 - `digest` — boundary: crossing `budget_used_pct` produces a body even when spend is flat.
+- `digest` — boundary: batch jobs that finished since the last digest appear in the body
+  with their exit states, and a digest with only batch news is still sent.
 - `cron_write` — happy: installing twice leaves exactly one marked block.
 - `cron_write` — happy: removing restores the crontab byte-for-byte, other entries intact.
 - `cron_write` — error: no `crontab` binary raises `RuntimeError` naming launchd/systemd.
@@ -1015,19 +1271,23 @@ their captured output committed as the fixtures the tests above read.
 
 ## 5. Estimated scope
 
-Roughly **28 files, ~1,650 lines added, 0 modified** — a greenfield repo, so nearly all of
-it is new; ~40% of the Python is `if test():` blocks and their fixtures.
+Roughly **31 files, ~1,850 lines added, 0 modified** — a greenfield repo, so nearly all of
+it is new; ~40% of the Python is `if test():` blocks and their fixtures. The review's batch
+mode and hooks added ~200 lines net, which is small because both reuse the interactive
+path wholesale: batch changes only how the job is submitted, and the hooks are JSON.
 
 - `pyproject.toml`, `.gitignore`, `.pre-commit-config.yaml`, `.github/workflows/ci.yml` —
   ~150 added (mostly the poe inventory)
 - `slurm_agent/config.py` — ~130
 - `slurm_agent/remote.py` — ~90
 - `slurm_agent/assets/probe.sh` — ~35
-- `slurm_agent/assets/remote_status.py` — ~35
+- `slurm_agent/assets/remote_status.py` — ~45
+- `slurm_agent/assets/hook_settings.json.jinja` — ~20
+- `prompts/job.sbatch.jinja` — ~30
 - `slurm_agent/jobs.py` — ~190
 - `slurm_agent/staging.py` — ~110
-- `slurm_agent/launch.py` — ~220
-- `slurm_agent/watch.py` — ~260
+- `slurm_agent/launch.py` — ~300 (`prepare_run` + `launch` + `launch_batch`)
+- `slurm_agent/watch.py` — ~290
 - `slurm_agent/monitor.py` — ~170
 - `slurm_agent/notify.py` — ~30
 - `slurm_agent/preflight.py` — ~130
@@ -1053,7 +1313,7 @@ reviewable — the first three PRs are useful on their own even if the rest neve
 
 ## 6. Stacking plan
 
-Seven PRs, bottom first. Every layer builds and passes CI with nothing above it merged, and
+Eight PRs, bottom first. Every layer builds and passes CI with nothing above it merged, and
 every layer ships its own tests. Branches are rooted at
 `claude/slurm-agent-orchestration-v8jauv`.
 
@@ -1080,10 +1340,11 @@ every layer ships its own tests. Branches are rooted at
     complete, separately useful capability; no agent needs to exist for it to be worth having.
   - *Depends on:* `…-02-jobs`.
 - **`…-04-launch`**
-  - *Lands:* `launch.py`, `prompts/agent_launch.md.jinja`, `assets/remote_status.py`,
+  - *Lands:* `launch.py` (`claude_argv`, `prepare_run`, `launch`), `prompts/agent_launch.md.jinja`,
+    `assets/remote_status.py`, `assets/hook_settings.json.jinja`,
     `agents/experiment-runner.yaml`, `config/mcp.json`; `agent-run` / `agent-logs`.
   - *Stands alone because:* it launches and inspects one supervised-by-hand agent end to
-    end. Supervision is a separate argument and should be reviewed as one.
+    end, hooks included. Supervision is a separate argument and should be reviewed as one.
   - *Depends on:* `…-03-staging`.
 - **`…-05-supervise`**
   - *Lands:* `assets/probe.sh` and `remote.probe`; `watch.py` entire; `agent-status` /
@@ -1091,27 +1352,35 @@ every layer ships its own tests. Branches are rooted at
   - *Stands alone because:* it is the whole policy — the pure `decide` plus its threshold
     tests — and it is the layer most worth arguing about line by line.
   - *Depends on:* `…-04-launch`.
-- **`…-06-monitor`**
+- **`…-06-batch`**
+  - *Lands:* `launch_batch`, `prompts/job.sbatch.jinja`, `AgentConfig.mode`, `agent-batch`;
+    the `TIMEOUT` and never-renew-a-batch-job branches of `decide`.
+  - *Stands alone because:* it is a second submission path over machinery that already
+    exists and is already tested, and it is the only way to run anything while the single
+    interactive allocation is in use. Reviewing it separately keeps the interactive
+    argument in PR-04/05 from being re-opened by sbatch details.
+  - *Depends on:* `…-05-supervise` (it extends `decide`).
+- **`…-07-monitor`**
   - *Lands:* `monitor.py`, `notify.py`, `config/monitor.yaml`; the four `monitor-*` commands.
   - *Stands alone because:* the usage digest shares only `remote.run` with everything above
     it. It could genuinely have shipped first; it is last because it is the least urgent.
-  - *Depends on:* `…-01-scaffold` in principle, `…-05-supervise` in practice (stacked to keep
+  - *Depends on:* `…-01-scaffold` in principle, `…-06-batch` in practice (stacked to keep
     the merge order linear rather than because it needs the code).
-- **`…-07-init-skills-docs`**
+- **`…-08-init-skills-docs`**
   - *Lands:* `preflight.py` and `poe init`; `.claude/skills/slurm-orchestration.md`;
     `sessions/_template.py` and `poe session-new`; the README command reference.
   - *Stands alone because:* `poe init` can only check things once they all exist, and the
     skill can only describe a workflow once the workflow runs. This layer is the repo
     becoming self-describing.
-  - *Depends on:* `…-06-monitor`.
+  - *Depends on:* `…-07-monitor`.
 
 A plan, not a contract: an Execute session that finds a better cut may take it and say so in
-the PR body. Folding **06** into **07**, or **03** into **04**, are the two most likely.
+the PR body. Folding **07** into **08**, or **03** into **04**, are the two most likely.
 
 ## Appendix A — assumptions to verify on first contact
 
 Neither this design session nor any Claude session can reach Tillicum (that is the spec's
-whole premise), so five things below are reasoned, not observed. Each has a named owner PR
+whole premise), so the things below are reasoned, not observed. Each has a named owner PR
 and a named fallback, and `poe init` is where they become checks rather than assumptions.
 
 - **`salloc --no-shell` is permitted, and the allocation outlives the SSH connection.**
@@ -1125,13 +1394,42 @@ and a named fallback, and `poe init` is where they become checks rather than ass
   - *Fallback:* start the step inside the same login-node `tmux` session that holds the
     allocation. Note the residual limitation either way: the `srun` client runs on the login
     node, so a login-node reboot ends the step. Bounded leases are what make that survivable.
-- **`claude -p` authenticates non-interactively on Tillicum under the user's subscription.**
+- **`claude -p` authenticates non-interactively on Tillicum under the user's subscription,
+  and still reports a cost.**
   - *Owner:* PR-04, and the `AGENT CREDENTIAL` check in `poe init` — deliberately a
     one-token round trip on the *login* node, so it costs nothing and runs before any GPU.
-  - *Fallback:* none that this repo provides. If the subscription cannot be used headlessly,
-    the credential question in the spec's Q&A reopens and comes back to Design.
-  - *Note:* this is why `claude_argv` never emits `--bare`, and why there is a test asserting
-    so.
+    The check asserts two things: that the run succeeds, and that `total_cost_usd` comes
+    back **greater than zero**, because a subscription that reports zero would silently
+    disarm `--max-budget-usd`.
+  - *Partly verified already:* run against the CLI while writing this design,
+    `claude -p --output-format json --max-budget-usd 5` returned `total_cost_usd` with a
+    per-model breakdown carrying `"costBasis": "list"` — so the CLI prices runs at API list
+    rates. What remains unverified is only that this holds under *subscription* auth on
+    Tillicum specifically, which is what the `poe init` assertion pins down.
+  - *Fallback if cost comes back zero:* `--max-turns` as the runaway guard instead. Note it
+    exits non-zero, so `launch` must translate that exit into a `state="failed"` result
+    rather than treating it as a crash.
+  - *Note:* this is why `claude_argv` never emits `--bare`, and why there is a test
+    asserting so.
+- **Tillicum permits exactly one interactive allocation per user.**
+  - *Owner:* PR-02. Taken from the review as a statement of fact about the cluster; the
+    `ALLOCATION PROBE` check confirms it by observing what a second `salloc` does.
+  - *Fallback:* if the cap turns out to be higher or absent, `job_up`'s guard becomes a
+    warning instead of a refusal — a one-line change. Nothing else in the design depends on
+    the cap being exactly one, because agents share an allocation as `--overlap` steps
+    either way.
+- **Hooks fire for a `claude -p` run started under `srun` / `sbatch`.**
+  - *Owner:* PR-04. `Stop` and `SessionEnd` are confirmed hook events in the installed CLI,
+    and `--settings` is the documented delivery path; what is unobserved is whether a
+    non-interactive, non-TTY run on a compute node fires them as expected.
+  - *Fallback:* liveness falls back to the observed signal alone — `no_progress_for` on the
+    notebook mtime, which needs no cooperation from the agent or the CLI. `status_stale_for`
+    would then revert to depending on the agent's own calls, which is the weaker position
+    this design moved away from, so it is worth confirming early.
+- **`sbatch` is available to this account with a partition that accepts these walltimes.**
+  - *Owner:* PR-06.
+  - *Fallback:* none needed for correctness — without batch, the design is the interactive
+    half only, which is what the spec originally asked for.
 - **`hyakusage` exists and its output is stable enough to parse.**
   - *Owner:* PR-06. The first act is to capture a real sample into
     `tests/fixtures/hyakusage.txt`; the parser is written against that file.
@@ -1150,12 +1448,42 @@ and a named fallback, and `poe init` is where they become checks rather than ass
   claims it is designed *in*.
 - **Slack notifications.** A repo issue per the spec's Q&A. `notify.send` is a function, so
   the second channel is a second function, not an interface change.
-- **Batch jobs for genuinely long work** (fine-tuning and similar). The spec's Q&A records
-  this as a feature request to open after shipping; leases and interactive allocations are
-  the whole story here.
+- ~~**Batch jobs for genuinely long work.**~~ **Now in scope**, at the review's request and
+  because the one-interactive-allocation cap makes it necessary rather than optional. See
+  *Two execution modes*. This **supersedes the spec's Q&A note** that batch was a
+  post-ship feature request; the spec should be amended rather than left contradicting the
+  design.
 - **What a remote agent should conclude.** Run layout, metrics and analysis stay owned by
   the repo running the experiment (spec, *Out of scope*). This repo gets the compute,
   launches the agent, and stops.
+
+## Appendix C — two rulings the review needs from you
+
+Both of these reverse something the approved spec says, so they are yours to decide rather
+than mine to assume. The design as written takes the conservative branch of each.
+
+- **Should the *scheduled* monitor be able to submit batch jobs?**
+  - *The spec says no:* "Acting on the cluster from the monitor. The scheduled job reports
+    and alerts. It never cancels a job, resizes an allocation, or keeps one alive."
+  - *The review said:* "let the monitor agent fire a batch slurm script … overnight".
+  - *What the design does:* reads "monitor agent" as the **manager** — the supervising
+    session, which already holds kill authority — and gives it `agent-batch`. The
+    **scheduled** usage monitor gains only a *report* on how batch jobs went, and still
+    never acts. That keeps one actor with cluster authority instead of two.
+  - *If you meant the scheduled job literally:* say so and it becomes a small addition —
+    but it puts submission authority in an unattended cron job, which is the thing the
+    spec's out-of-scope bullet was protecting against.
+- **May a secret live on Tillicum so agents can email/Slack you directly?**
+  - *The spec says no:* "This repo never writes secrets to the shared filesystem."
+  - *The review said:* "have the experiment agents themselves push emails/slack messages to
+    me when they are done".
+  - *What the design does:* the agent announces completion **on its PR** through the git
+    credential it already has there, and the local side emails only about failures and
+    silences. No new secret, and the human still hears about everything that matters.
+  - *If you want real email from the node:* it needs an SMTP app-password or a Slack webhook
+    on the shared filesystem. That is a deliberate reversal of a spec bullet, and worth
+    doing only if PR notifications turn out to be too quiet in practice — which we will
+    know after a week of real runs.
 
 ## Approval
 
