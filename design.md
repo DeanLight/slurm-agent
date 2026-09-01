@@ -170,19 +170,39 @@ chosen (`agent-run` vs `agent-batch`) overrides it.
 ### Who tells the human, and when
 
 The review asked for agents to announce their own completion so the manager only speaks
-about failures. That is the right split, and most of it lands cleanly:
+about failures. That is the split, and — following the ruling in Appendix C — agents now
+reach the human **directly**, by email and Slack, from the compute node.
 
-- **The agent announces success itself, through GitHub.** It already has a git credential
-  on Tillicum (spec Q&A) and the GitHub MCP, and the spec already says a finished run
-  points the human at its experiment notebook *in its PR*. So "done, wants review" is a PR
-  comment the agent writes — no new credential, no new channel.
+- **The agent announces itself, on two channels.** A PR comment for anything review-worthy
+  (it already has the git credential and the GitHub MCP, and the spec already says a
+  finished run points the human at its notebook *in its PR*), plus an actual email or Slack
+  message so the human finds out without opening GitHub.
+- **It is the ****`SessionEnd`**** hook that sends, not the agent's good intentions.** Same
+  lesson as the status block: the hook writes the terminal state and then sends a message
+  derived from that recorded state. An agent that forgets to say goodbye still says
+  goodbye. Mid-run, the agent may also send on `needs_human` — the one case where waiting
+  three days for the next digest is the wrong answer.
+- **This does not cost the human more interrupts.** The spec's "interrupted twice, at most"
+  holds unchanged, because the triggers are unchanged: something only a human can fix, or a
+  run that finished and wants review. All that moved is *who* pushes the message. A run
+  that is merely still going still generates nothing.
 - **The local side speaks only about failures and silences:** crashed, `TIMEOUT`, killed by
-  a threshold, or `finished` with no PR comment (the agent could not announce itself). That
-  is the review's "only tell me if they crashed or could not send the message", and it
-  falls out of `decide` with one extra rule rather than new machinery.
-- **Email from the compute node is *not* designed here.** It would need an SMTP credential
-  or webhook on the shared filesystem, and the spec is explicit that this repo never writes
-  secrets to Tillicum. Flagged for a ruling rather than decided — see Appendix B.
+  a threshold, or `finished` having never announced itself. That last one is the review's
+  "tell me if they could not send the message", and it falls out of `decide` as one rule.
+
+**The credential this needs, and the line that does not move.** Sending from the compute
+node requires an SMTP app-password or a Slack webhook on Tillicum's shared filesystem. The
+spec forbade that and the ruling reverses it — but only the *storage*, not the handling:
+
+- The human places `~/.slurm-agent/notify.env` on Tillicum (and on the laptop). **This repo
+  never writes it, never commits it, never echoes it, and no agent is ever asked to create
+  or read it** — the shim sources it, the agent only passes a subject and a body.
+- `poe init` **asserts mode `0600`** and fails loudly otherwise. Tillicum is a shared
+  filesystem; a group-readable app-password is the actual risk here, and it is the kind of
+  thing that is discovered late or never.
+- Errors from `smtplib` / the webhook POST are scrubbed of anything matching a
+  `SLURM_AGENT_SMTP_*` / `SLURM_AGENT_SLACK_*` value before they reach a log or a status
+  block, so a misconfiguration cannot leak the secret into a committed notebook.
 
 ## 0. Justify existence
 
@@ -208,7 +228,9 @@ The default answer is *don't build it*. What follows is what survived.
   deliberate deviation from the Code Guide, not an oversight.**
 - **A cost model.** `gpus x elapsed_hours x rate`, one line, rate in `cluster.yaml`.
 - **Any `Base*` class, ABC or Protocol.** There is one cluster, one agent runner, one
-  notification channel. Slack is a repo issue (spec Q&A), and it will be a second function.
+  notification channel per message. Email and Slack are two concrete functions and a
+  `notify()` that fans out — nothing swaps a channel at runtime, so there is nothing for an
+  interface to abstract.
 
 ### What earns its place
 
@@ -296,6 +318,27 @@ The default answer is *don't build it*. What follows is what survived.
 - **`watch.watch` — the loop**
   - *Needs to exist:* yes, but it is thin *because* `decide` is pure: poll, decide, act, log.
   - *Smallest form:* ~40 lines including the kill/renew/escalate branch.
+- **`notify` — two channels, and the credential discipline around them**
+  - *Needs to exist:* yes. Three callers need it (supervision escalations, the digest, and
+    the agents themselves), and after the Appendix C ruling the agents send from Tillicum.
+  - *Already solved:* completely, by the stdlib. Email is `smtplib` + `email.message`;
+    Slack is a `urllib.request` POST of `{"text": …}` to an incoming webhook. **No
+    dependency, and Slack stops being a deferred issue because it is five lines.**
+  - *Smallest form:* `send_email`, `send_slack`, a `notify()` that fans out and returns
+    which channels worked, and `creds()` — the only reader of the secrets file, and the one
+    place that refuses a group-readable one. Two concrete functions, no `Notifier` ABC:
+    nothing swaps channels at runtime.
+  - *The part that is not code:* the human places `~/.slurm-agent/notify.env` at mode 0600
+    on both machines. This repo never writes, commits, echoes or asks an agent to read it.
+- **`assets/remote_notify.py` — the agent's outbound shim**
+  - *Needs to exist:* yes — the compute node has the credential and no route back to the
+    laptop, so this is how a 3am `needs_human` reaches a person.
+  - *Already solved:* by `notify.py`, whose logic it mirrors — but the run root cannot
+    import this repo (only the *experiment* repo is cloned on Tillicum), so it ships as a
+    standalone zero-dependency file the way `remote_status.py` does.
+  - *Smallest form:* ~40 lines. Driven by the `SessionEnd` hook off the recorded status
+    block, so an agent that forgets to announce itself still announces itself; callable by
+    the agent mid-run for `needs_human`.
 - **`monitor` — the change-gated usage digest**
   - *Needs to exist:* yes, the spec's own motivating story ("\$86 nobody noticed").
   - *Already solved:* `smtplib`/`email.message` for sending, `crontab -l | ... | crontab -`
@@ -381,11 +424,14 @@ class SupervisionConfig(BaseModel):
 
 
 class MonitorConfig(BaseModel):
+    """config/monitor.yaml — cadence and thresholds only.
+
+    Channels and recipients moved to NotifyConfig, because the digest is no longer the only
+    sender: the supervision loop and the remote agents use the same two channels.
+    """
     model_config = ConfigDict(extra="forbid")
     every_days: int = 3
     only_if_changed: bool = True
-    channel: Literal["email"] = "email"  # slack is a repo issue (spec Q&A)
-    to: str
     budget_used_pct: int = 80
     idle_gpu_hours: float = 2.0
 
@@ -643,9 +689,15 @@ def prepare_run(agent: AgentConfig, task: str, run: Runner, cluster: ClusterConf
     # session_id = str(uuid4()); run_dir = f"{cluster.run_root}/{session_id}"; mkdir -p
     # write, all by heredoc over ssh (no scp round trip):
     #     run_dir/remote_status.py   <- assets/remote_status.py
+    #     run_dir/remote_notify.py   <- assets/remote_notify.py
     #     run_dir/settings.json      <- render assets/hook_settings.json.jinja:
     #           Stop       -> python RUN_DIR/remote_status.py tick --notebook <abs .ipynb>
     #           SessionEnd -> python RUN_DIR/remote_status.py finish --notebook <abs .ipynb>
+    #                      && python RUN_DIR/remote_notify.py --from-status
+    #                         (derives subject/body from the block just written, so the
+    #                          message reports recorded state rather than improvisation;
+    #                          records the delivered channels back into the block, which is
+    #                          what `announced` reads)
     #     run_dir/launch.json        <- session_id, task, agent kind, mode, repo, ref, sha,
     #           workdir, notebook (abs, {EXP_ID} substituted), job_id/job_name (interactive)
     #           lease, max_leases, leases_used=1, max_budget_usd, launched_at
@@ -898,11 +950,78 @@ def monitor_errors():
 
 ### `slurm_agent/notify.py`
 
+Used by three callers — the supervision loop's escalations, the scheduled digest, and (via
+the shim) the remote agents themselves. One module, two sibling functions, no `Notifier`
+ABC: two concrete channels that never need to be swapped at runtime do not justify one.
+
 ```python
-def send(subject: str, body: str, *, to: str) -> None:
-    """One email, via smtplib + email.message. The only outbound channel today."""
-    # Slack is a repo issue per the spec Q&A; it will be a sibling function, not a Notifier ABC
+class NotifyConfig(BaseModel):
+    """config/notify.yaml — channels and recipients. Secrets are NOT here; see creds()."""
+    model_config = ConfigDict(extra="forbid")
+    channels: list[Literal["email", "slack"]] = ["email"]
+    to: str | None = None                # email recipient
+    slack_channel: str | None = None     # optional override; the webhook has a default
+    env_file: Path = Path("~/.slurm-agent/notify.env")
+
+
+def creds(env_file: Path) -> dict[str, str]:
+    """Read the notify secrets. Refuses a file the group or world can read.
+
+    Tillicum's filesystem is shared, so a 0644 app-password is the real risk. This is the
+    only reader; nothing else in the repo touches these values, and none of them is ever
+    logged.
+    """
+    # stat -> if mode & 0o077: raise InsecureCredentialsError(path, oct(mode))
+    # parse KEY=VALUE lines (no shell, no export, no interpolation)
     raise NotImplementedError
+
+
+def send_email(subject: str, body: str, *, to: str, secrets: dict[str, str]) -> None:
+    """One email via smtplib + email.message. STARTTLS, app-password auth."""
+    # EmailMessage(); set Subject/From/To; set_content(body)
+    # smtplib.SMTP(host, port) -> starttls() -> login(user, password) -> send_message()
+    raise NotImplementedError
+
+
+def send_slack(text: str, *, secrets: dict[str, str], channel: str | None = None) -> None:
+    """One Slack message, POSTed to an incoming webhook with urllib.request.
+
+    A webhook is a URL that takes {"text": …}. No SDK, no OAuth app, no dependency —
+    which is why Slack stops being 'a repo issue' and becomes five lines.
+    """
+    raise NotImplementedError
+
+
+def notify(subject: str, body: str, cfg: NotifyConfig) -> list[str]:
+    """Send on every configured channel. Returns the channels that succeeded.
+
+    Never raises on a partial failure: one channel down must not suppress the other, and a
+    caller that is reporting a crash should not itself crash. It returns what got through
+    so the caller can record 'announced on slack, email failed' rather than guessing.
+    """
+    raise NotImplementedError
+
+
+def notify_test(cfg: NotifyConfig) -> list[Check]:
+    """`poe notify-test`: actually send one message per channel and report per channel.
+
+    This is the only thing that truly proves the pipeline, so it is a deliberate command
+    rather than something `poe init` fires every run — see check_all.
+    """
+    raise NotImplementedError
+
+
+def notify_errors():
+    """Error cases for notify."""
+    # env_file missing            -> FileNotFoundError naming the path and docs/setup.md
+    # env_file mode 0644 on the shared filesystem
+    #                             -> InsecureCredentialsError; never proceeds to read it
+    # SMTP auth rejected          -> NotifyError with the server's message, SCRUBBED of any
+    #                                value present in `secrets` (a bad password must not be
+    #                                echoed into a log, a status block or a notebook)
+    # webhook returns non-2xx     -> NotifyError with status and the first 200 chars
+    # one channel up, one down    -> no raise; notify() returns the channel that worked
+    # every channel down          -> NotifyError; watch.act logs it and keeps the loop alive
 ```
 
 ### `slurm_agent/preflight.py` — `poe init`
@@ -916,11 +1035,16 @@ class Check(BaseModel):
     fix: str | None = None
 
 
-def check_all(cluster: ClusterConfig, *, create: bool = True) -> list[Check]:
+def check_all(cluster: ClusterConfig, notify_cfg: NotifyConfig, *,
+              create: bool = True, send_test: bool = False) -> list[Check]:
     """Everything a fresh clone needs, checked and (where safe) created.
 
     Two of these exist because the spec's Q&A demanded early verification of assumptions
     every lease depends on. Finding out here costs a second; finding out at 3am costs a run.
+
+    The notify rows are checked on BOTH machines. An agent that finishes at 3am and cannot
+    reach you is the failure this whole feature exists to prevent, and it is silent by
+    construction -- so it is verified up front rather than discovered by its absence.
     """
     # git hooks         : pre-commit installed        (create: `pre-commit install`)
     # ssh config        : login + node hosts present  (create: from ssh_config_templates/)
@@ -936,7 +1060,24 @@ def check_all(cluster: ClusterConfig, *, create: bool = True) -> list[Check]:
     #                     zero cost would silently disarm --max-budget-usd
     # BATCH             : `sbatch --test-only` on the rendered template — the partition
     #                     accepts our walltime, checked without queueing anything
-    # notifications     : monitor.yaml present and `to:` set
+    # NOTIFY CREDS (local)  : ~/.slurm-agent/notify.env exists, is mode 0600, and carries
+    #                     every key the configured channels need. Mode is a FAILURE, not a
+    #                     warning.
+    # NOTIFY CREDS (cluster): the same file on Tillicum, same mode assertion, over ssh.
+    #                     Two rows because they are two machines and either can be the one
+    #                     that is wrong -- the laptop sends the digest, the agents send
+    #                     from the compute node.
+    # NOTIFY REACHABLE  : per channel, WITHOUT sending: SMTP connect + STARTTLS + login +
+    #                     quit; Slack, the webhook URL is well-formed and its secret is
+    #                     present. Catches ~every real misconfiguration (wrong host, dead
+    #                     password, missing key) at zero noise, every run.
+    # NOTIFY SEND       : has `poe notify-test` ever actually delivered on each channel?
+    #                     Read from the ledger. Unproven -> the row FAILS with
+    #                     `fix: poe notify-test`. `poe init --send-test` runs it inline.
+    #                     Split this way on purpose: a real send is the only true proof,
+    #                     but a `poe init` that emails you every time it runs is a `poe
+    #                     init` you stop running. Proved once, remembered, re-provable on
+    #                     demand.
     # usage monitor     : cron block installed        (report only — never install silently)
     raise NotImplementedError
 
@@ -952,7 +1093,9 @@ def render(checks: list[Check]) -> str:
 app = cyclopts.App(name="slurm-agent")
 
 @app.command
-def init(create: bool = True) -> None: ...
+def init(create: bool = True, send_test: bool = False) -> None: ...
+@app.command(name="notify-test")
+def notify_test_cmd() -> None: ...      # really sends, one message per channel
 @app.command(name="job-up")
 def job_up_cmd(name: str, gpus: int = 1, time: str = "04:00:00",
                qos: str | None = None, cpus: int = 8, mem: str = "200G") -> None: ...
@@ -1024,11 +1167,18 @@ is exotic and nothing is written that a dependency already does.
   `ruamel.yaml` (round-trip fidelity we do not need — nothing here rewrites a config).
 
 **Stdlib, named because they replace things we would otherwise write:** `subprocess` (the
-SSH seam), `smtplib` + `email.message` (the digest), `tempfile` + `os.replace` (the shim's
-atomic write), `uuid` (session ids), `json`, `shlex`, `pathlib`, `re`.
+SSH seam), `smtplib` + `email.message` (email), **`urllib.request` (Slack incoming
+webhooks — which is why Slack needs no SDK, no OAuth app and no dependency, and stops being
+a deferred repo issue)**, `tempfile` + `os.replace` (the shims' atomic writes), `os.stat`
+(the 0600 assertion on the credentials file), `uuid` (session ids), `json`, `shlex`,
+`pathlib`, `re`.
+
+**Notifications add zero dependencies.** Both channels are stdlib, which is the whole
+reason email *and* Slack ship together here rather than Slack waiting for an issue.
 
 **Not added, deliberately:** `paramiko` / `fabric` / `asyncssh`, `python-crontab`,
-`click` / `typer`, `pandas`, `sqlalchemy`, `tenacity`, `asyncio`. Each is justified in §0.
+`click` / `typer`, `pandas`, `sqlalchemy`, `tenacity`, `asyncio`, `requests` / `httpx`,
+`slack-sdk`. Each is justified in §0.
 
 ## 3. File locations
 
@@ -1058,8 +1208,11 @@ with `if test():` blocks beside each function, per the Code Guide.
 
 **`config/` — new**
 
-- `cluster.yaml`, `supervision.yaml`, `monitor.yaml` — the three configs, with the spec's
-  values as defaults.
+- `cluster.yaml`, `supervision.yaml`, `monitor.yaml` — three configs, with the spec's
+  values as defaults. `monitor.yaml` now carries cadence and thresholds only.
+- `notify.yaml` — channels and recipients, shared by the digest, the supervision loop and
+  the agents. **Contains no secrets:** those live in `~/.slurm-agent/notify.env` at mode
+  0600 on each machine, placed by a human and never written by this repo.
 - `mcp.json` — the MCP server definitions `AgentConfig.mcp` names resolve against, passed
   to `claude --mcp-config`.
 
@@ -1081,7 +1234,8 @@ with `if test():` blocks beside each function, per the Code Guide.
   `continue_run`, `MissingEnvError`, `LeaseExhausted`, `ContentionError`.
 - `watch.py` — `AgentView`, `Decision`, `views`, `decide`, `act`, `watch`, `kill`.
 - `monitor.py` — `usage`, `digest`, `monitor_run`, `cron_write`, `cron_status`.
-- `notify.py` — `send`.
+- `notify.py` — `NotifyConfig`, `creds`, `send_email`, `send_slack`, `notify`,
+  `notify_test`, `NotifyError`, `InsecureCredentialsError`.
 - `preflight.py` — `Check`, `check_all`, `render`.
 - `cli.py` — the cyclopts app; every command 1–3 lines.
 
@@ -1092,6 +1246,8 @@ with `if test():` blocks beside each function, per the Code Guide.
   verbs `tick` / `finish` (called by the hooks) and the agent's own `<state> --round …`.
 - `hook_settings.json.jinja` — the `Stop` / `SessionEnd` hook settings rendered into each
   run root and passed as `claude --settings`.
+- `remote_notify.py` — the ~40-line zero-dependency outbound shim copied to each run root;
+  driven by the `SessionEnd` hook and callable by the agent on `needs_human`.
 
 **`prompts/` — new**
 
@@ -1112,8 +1268,10 @@ with `if test():` blocks beside each function, per the Code Guide.
 
 **`tests/` — new**
 
-- `conftest.py` — `fake_runner(mapping)`, the dict-backed `Runner` the whole suite injects.
-- `fixtures/` — `squeue.txt`, `probe.json`, `hyakusage.txt`, `envrc_sample`.
+- `conftest.py` — `fake_runner(mapping)`, the dict-backed `Runner` the whole suite injects,
+  plus `fake_smtp` / `fake_webhook` so no test ever sends a real message.
+- `fixtures/` — `squeue.txt`, `probe.json`, `hyakusage.txt`, `envrc_sample`,
+  `notify_env_sample`, `notebook_4cells.ipynb`.
 
 **Removed:** `slurm_agent/example.py` (the template placeholder), in PR-01.
 
@@ -1252,11 +1410,40 @@ which case it lives in `tests/`. Every error case in §1 has a bullet here.
 - `cron_write` — happy: removing restores the crontab byte-for-byte, other entries intact.
 - `cron_write` — error: no `crontab` binary raises `RuntimeError` naming launchd/systemd.
 
+**`notify.py`**
+
+- `creds` — happy: `fixtures/notify_env_sample` at 0600 parses to the expected keys.
+- `creds` — **error: a 0644 file raises `InsecureCredentialsError` and is never read** —
+  the shared-filesystem guard, and the single most important test in this module.
+- `creds` — error: a missing file raises `FileNotFoundError` naming `docs/setup.md`.
+- `send_email` — happy: against a fake SMTP, issues `starttls` → `login` → `send_message`
+  with the subject and recipient given.
+- `send_slack` — happy: POSTs `{"text": …}` to the webhook URL from the secrets.
+- `send_slack` — error: a non-2xx response raises `NotifyError` carrying the status.
+- **Scrubbing — error, and the security-relevant one:** an SMTP rejection whose message
+  echoes the password produces a `NotifyError` whose string contains **none** of the values
+  in `secrets`. Asserted by seeding a distinctive password and searching the exception text.
+- `notify` — boundary: one channel raising still returns the other as delivered, and does
+  not raise. A reporter of crashes must not crash.
+- `notify` — error: every channel failing raises `NotifyError` (and `watch.act` logs it and
+  keeps the loop alive — asserted there).
+- `remote_notify.py --from-status` — happy: builds subject and body from a fixture status
+  block and writes the delivered channels back into it.
+- `remote_notify.py` — boundary: with no credentials file it exits non-zero **without
+  touching the status block**, so a notify failure cannot corrupt supervision state.
+
 **`preflight.py`**
 
 - `check_all` — happy: all checks pass against a fake runner and produce `ok=True` rows.
 - `check_all` — boundary: a failing check yields `ok=False` with a non-empty `fix`.
 - `check_all` — boundary: `create=False` never mutates (the fake runner sees no `mkdir`).
+- `check_all` — boundary: notify credentials are checked on **both** machines — the local
+  file and the one on Tillicum produce two rows, and either being wrong fails its own row.
+- `check_all` — boundary: a 0644 credentials file yields `ok=False` (not a warning).
+- `check_all` — boundary: with `send_test=False` **no message is sent** (the fake SMTP and
+  fake webhook record zero calls), and the `NOTIFY SEND` row fails with
+  `fix: poe notify-test` when the ledger has no successful send.
+- `check_all` — happy: `send_test=True` sends once per channel and the row passes.
 - `render` — happy: renders the spec's `name / ok|MISSING / detail` columns.
 
 **`cli.py`**
@@ -1271,7 +1458,7 @@ their captured output committed as the fixtures the tests above read.
 
 ## 5. Estimated scope
 
-Roughly **31 files, ~1,850 lines added, 0 modified** — a greenfield repo, so nearly all of
+Roughly **35 files, ~2,120 lines added, 0 modified** — a greenfield repo, so nearly all of
 it is new; ~40% of the Python is `if test():` blocks and their fixtures. The review's batch
 mode and hooks added ~200 lines net, which is small because both reuse the interactive
 path wholesale: batch changes only how the job is submitted, and the hooks are JSON.
@@ -1289,8 +1476,10 @@ path wholesale: batch changes only how the job is submitted, and the hooks are J
 - `slurm_agent/launch.py` — ~300 (`prepare_run` + `launch` + `launch_batch`)
 - `slurm_agent/watch.py` — ~290
 - `slurm_agent/monitor.py` — ~170
-- `slurm_agent/notify.py` — ~30
-- `slurm_agent/preflight.py` — ~130
+- `slurm_agent/notify.py` — ~150 (two channels, `creds`, scrubbing, `notify_test`)
+- `slurm_agent/assets/remote_notify.py` — ~40
+- `config/notify.yaml` — ~15
+- `slurm_agent/preflight.py` — ~180 (four notify rows across two machines)
 - `slurm_agent/cli.py` — ~120
 - `config/*.yaml`, `config/mcp.json`, `agents/experiment-runner.yaml` — ~90
 - `prompts/agent_launch.md.jinja`, `sessions/_template.py`, `ssh_config_templates/*` — ~90
@@ -1313,7 +1502,7 @@ reviewable — the first three PRs are useful on their own even if the rest neve
 
 ## 6. Stacking plan
 
-Eight PRs, bottom first. Every layer builds and passes CI with nothing above it merged, and
+Nine PRs, bottom first. Every layer builds and passes CI with nothing above it merged, and
 every layer ships its own tests. Branches are rooted at
 `claude/slurm-agent-orchestration-v8jauv`.
 
@@ -1346,36 +1535,47 @@ every layer ships its own tests. Branches are rooted at
   - *Stands alone because:* it launches and inspects one supervised-by-hand agent end to
     end, hooks included. Supervision is a separate argument and should be reviewed as one.
   - *Depends on:* `…-03-staging`.
-- **`…-05-supervise`**
+- **`…-05-notify`**
+  - *Lands:* `notify.py`, `assets/remote_notify.py`, `config/notify.yaml`, the `SessionEnd`
+    notify hook, and `poe notify-test`.
+  - *Stands alone because:* "I can reach you on email and Slack, from the laptop and from
+    Tillicum" is a complete capability with its own proof — `poe notify-test` — and it
+    needs nothing above it. It sits here rather than with the monitor because it has three
+    consumers above it (supervision escalations, the digest, and the agents), so shipping
+    it once below all three is what keeps it from being written twice.
+  - *Depends on:* `…-04-launch` (the run root and the hook settings it extends).
+- **`…-06-supervise`**
   - *Lands:* `assets/probe.sh` and `remote.probe`; `watch.py` entire; `agent-status` /
     `agent-watch` / `agent-kill` / `agent-continue`.
   - *Stands alone because:* it is the whole policy — the pure `decide` plus its threshold
     tests — and it is the layer most worth arguing about line by line.
-  - *Depends on:* `…-04-launch`.
-- **`…-06-batch`**
+  - *Depends on:* `…-05-notify` (escalation sends).
+- **`…-07-batch`**
   - *Lands:* `launch_batch`, `prompts/job.sbatch.jinja`, `AgentConfig.mode`, `agent-batch`;
     the `TIMEOUT` and never-renew-a-batch-job branches of `decide`.
   - *Stands alone because:* it is a second submission path over machinery that already
     exists and is already tested, and it is the only way to run anything while the single
     interactive allocation is in use. Reviewing it separately keeps the interactive
     argument in PR-04/05 from being re-opened by sbatch details.
-  - *Depends on:* `…-05-supervise` (it extends `decide`).
-- **`…-07-monitor`**
-  - *Lands:* `monitor.py`, `notify.py`, `config/monitor.yaml`; the four `monitor-*` commands.
-  - *Stands alone because:* the usage digest shares only `remote.run` with everything above
-    it. It could genuinely have shipped first; it is last because it is the least urgent.
-  - *Depends on:* `…-01-scaffold` in principle, `…-06-batch` in practice (stacked to keep
-    the merge order linear rather than because it needs the code).
-- **`…-08-init-skills-docs`**
-  - *Lands:* `preflight.py` and `poe init`; `.claude/skills/slurm-orchestration.md`;
-    `sessions/_template.py` and `poe session-new`; the README command reference.
+  - *Depends on:* `…-06-supervise` (it extends `decide`).
+- **`…-08-monitor`**
+  - *Lands:* `monitor.py`, `config/monitor.yaml`; the four `monitor-*` commands.
+  - *Stands alone because:* the usage digest shares only `remote.run` and `notify` with
+    everything above it. It is late because it is the least urgent, not the most coupled.
+  - *Depends on:* `…-05-notify` in principle, `…-07-batch` in practice (stacked to keep the
+    merge order linear rather than because it needs the code).
+- **`…-09-init-skills-docs`**
+  - *Lands:* `preflight.py` and `poe init` — including the four notify rows across both
+    machines; `.claude/skills/slurm-orchestration.md`; `sessions/_template.py` and
+    `poe session-new`; `docs/setup.md` (where a human is told how to place
+    `notify.env`); the README command reference.
   - *Stands alone because:* `poe init` can only check things once they all exist, and the
     skill can only describe a workflow once the workflow runs. This layer is the repo
     becoming self-describing.
-  - *Depends on:* `…-07-monitor`.
+  - *Depends on:* `…-08-monitor`.
 
 A plan, not a contract: an Execute session that finds a better cut may take it and say so in
-the PR body. Folding **07** into **08**, or **03** into **04**, are the two most likely.
+the PR body. Folding **08** into **09**, or **03** into **04**, are the two most likely.
 
 ## Appendix A — assumptions to verify on first contact
 
@@ -1427,9 +1627,19 @@ and a named fallback, and `poe init` is where they become checks rather than ass
     would then revert to depending on the agent's own calls, which is the weaker position
     this design moved away from, so it is worth confirming early.
 - **`sbatch` is available to this account with a partition that accepts these walltimes.**
-  - *Owner:* PR-06.
+  - *Owner:* PR-07.
   - *Fallback:* none needed for correctness — without batch, the design is the interactive
     half only, which is what the spec originally asked for.
+- **Tillicum's compute nodes can reach an SMTP server and `hooks.slack.com` outbound.**
+  - *Owner:* PR-05, and the `NOTIFY REACHABLE` / `NOTIFY SEND` checks in `poe init`, which
+    run the cluster-side rows over ssh. The spec's Q&A establishes general outbound access
+    from compute nodes, but that was asked about the Anthropic API and MCP servers, not
+    about port 587 — a site that allows HTTPS egress and blocks SMTP is an ordinary
+    configuration, so it is checked rather than assumed.
+  - *Fallback, in order:* Slack only (plain HTTPS, so it survives an SMTP block); then the
+    agent writing its message into the status block for the laptop to forward on the next
+    poll — which loses the 3am delivery this feature exists for, so it is a real
+    degradation and worth knowing about on day one rather than the first night.
 - **`hyakusage` exists and its output is stable enough to parse.**
   - *Owner:* PR-06. The first act is to capture a real sample into
     `tests/fixtures/hyakusage.txt`; the parser is written against that file.
@@ -1446,8 +1656,12 @@ and a named fallback, and `poe init` is where they become checks rather than ass
 - **Klone, and log archival to moana.** Deferred to repo issues opened once this ships
   (spec, *Out of scope*). `ClusterConfig` is why Klone is not designed *out*; nothing here
   claims it is designed *in*.
-- **Slack notifications.** A repo issue per the spec's Q&A. `notify.send` is a function, so
-  the second channel is a second function, not an interface change.
+- ~~**Slack notifications.**~~ **Now in scope.** The spec's Q&A said email first and Slack
+  as a repo issue; an incoming webhook turns out to be a `urllib.request` POST of
+  `{"text": …}`, so the "research what we need for a Slack version" the Q&A asked for has
+  an answer — nothing, no dependency and about five lines — and deferring it would cost
+  more in coordination than writing it. Like batch mode, this **supersedes a spec Q&A
+  answer** and the spec should be amended rather than left disagreeing.
 - ~~**Batch jobs for genuinely long work.**~~ **Now in scope**, at the review's request and
   because the one-interactive-allocation cap makes it necessary rather than optional. See
   *Two execution modes*. This **supersedes the spec's Q&A note** that batch was a
@@ -1457,33 +1671,45 @@ and a named fallback, and `poe init` is where they become checks rather than ass
   the repo running the experiment (spec, *Out of scope*). This repo gets the compute,
   launches the agent, and stops.
 
-## Appendix C — two rulings the review needs from you
+## Appendix C — two rulings, both now made
 
-Both of these reverse something the approved spec says, so they are yours to decide rather
-than mine to assume. The design as written takes the conservative branch of each.
+Both touched an approved-spec bullet, so both went back to the author. Recorded here so the
+reasoning survives the PR thread.
 
-- **Should the *scheduled* monitor be able to submit batch jobs?**
-  - *The spec says no:* "Acting on the cluster from the monitor. The scheduled job reports
-    and alerts. It never cancels a job, resizes an allocation, or keeps one alive."
-  - *The review said:* "let the monitor agent fire a batch slurm script … overnight".
-  - *What the design does:* reads "monitor agent" as the **manager** — the supervising
-    session, which already holds kill authority — and gives it `agent-batch`. The
-    **scheduled** usage monitor gains only a *report* on how batch jobs went, and still
-    never acts. That keeps one actor with cluster authority instead of two.
-  - *If you meant the scheduled job literally:* say so and it becomes a small addition —
-    but it puts submission authority in an unattended cron job, which is the thing the
-    spec's out-of-scope bullet was protecting against.
-- **May a secret live on Tillicum so agents can email/Slack you directly?**
-  - *The spec says no:* "This repo never writes secrets to the shared filesystem."
-  - *The review said:* "have the experiment agents themselves push emails/slack messages to
-    me when they are done".
-  - *What the design does:* the agent announces completion **on its PR** through the git
-    credential it already has there, and the local side emails only about failures and
-    silences. No new secret, and the human still hears about everything that matters.
-  - *If you want real email from the node:* it needs an SMTP app-password or a Slack webhook
-    on the shared filesystem. That is a deliberate reversal of a spec bullet, and worth
-    doing only if PR notifications turn out to be too quiet in practice — which we will
-    know after a week of real runs.
+- **Should the *scheduled* monitor be able to submit batch jobs? — NO. Manager only.**
+  - *Ruled:* 2026-08-27. The design keeps the conservative branch: `agent-batch` belongs to
+    the **manager** (the supervising session, which already holds kill authority), and the
+    **scheduled** usage monitor gains only a *report* on how batch jobs went. It still
+    never acts on the cluster, so the spec's out-of-scope bullet stands unamended.
+  - *The argument that settled it:* the scheduled monitor is a **crontab entry on the
+    laptop**, and a sleeping laptop runs no cron (macOS does not replay missed entries). So
+    giving it submission authority would not have bought overnight autonomy at all — batch
+    mode alone already does that, because SLURM runs the job once `sbatch` returns and
+    nothing local needs to be awake.
+  - *What it would have cost:* submit and kill authority coming apart. Every cost guard —
+    `blocked_for`, `status_stale_for`, `no_progress_for`, `gpu_idle_for` — lives inside
+    `agent-watch`. An unattended submitter creates jobs with no kill switch: bounded by
+    walltime (a 4-GPU 12h job is ~\$43), but recurring every three days.
+  - *Left on the table, deliberately:* having the digest **propose** a command
+    ("gpu-h200 idle 14h · TASK-104 pending · run: `poe agent-batch …`") — ~15 lines, no
+    unattended authority. Worth revisiting once there are real digests to judge, not now.
+- **May a secret live on Tillicum so agents can email/Slack you directly? — YES.**
+  - *Ruled:* 2026-08-27. This **reverses the spec's** "This repo never writes secrets to the
+    shared filesystem", and it is in this design rather than a follow-up.
+  - *What changed:* agents send email and Slack from the compute node, via the `SessionEnd`
+    hook and `assets/remote_notify.py`. Slack ships alongside email rather than as the
+    deferred repo issue the spec's Q&A imagined, because an incoming webhook is a stdlib
+    POST — see Appendix B.
+  - *What did not change — and this is the part worth holding to:* the spec's sentence is
+    reversed only as to **storage**, not handling. A human places
+    `~/.slurm-agent/notify.env` at mode 0600 on each machine; this repo never writes it,
+    never commits it, never echoes it, and never asks an agent to read or create it. `creds`
+    is its only reader and **refuses a group- or world-readable file outright** — on a
+    shared filesystem that is the real exposure. Notify errors are scrubbed of the secret
+    values before they can reach a log, a status block or a committed notebook.
+  - *And it is verified rather than assumed:* `poe init` checks the credentials on **both**
+    machines, proves each channel is reachable without sending, and fails until
+    `poe notify-test` has actually delivered at least once.
 
 ## Approval
 
