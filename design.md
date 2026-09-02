@@ -31,13 +31,18 @@ regardless of how many agents are in flight (§1, `probe`).
 Per **Code Design**, the spec's sketched interfaces are intent. Four changed; everything
 else is adopted verbatim, names and flags included.
 
-- **`poe init` absorbs the template's `poe init`, which becomes `poe hooks`.**
-  - *Was:* juplit_template ships `init = pre-commit install`; the spec wants `poe init` to
-    be the fresh-clone footprint check.
-  - *Now:* `poe init` is the spec's check, and installing the git hooks is its first step.
-    `poe hooks` remains for re-installing hooks alone.
-  - *Why:* two commands cannot share a name, and the spec's meaning is the one a human
-    reaching for `init` on a fresh clone expects.
+- **`poe init` splits into `poe init` (create) and `poe healthcheck` / `poe hc` (verify).**
+  - *Was:* the spec's `poe init` did both — "check/create local setup, report what's
+    missing" — and juplit_template's `init` is `pre-commit install`.
+  - *Now:* **`init` creates** the footprint (hooks, ssh entries, `.envrc` from the template,
+    the cluster run root) and then runs a full healthcheck, so setting up ends in a proof.
+    **`healthcheck` verifies** and creates nothing, with a fast tier by default and `--full`
+    for the slow proofs. `poe hc` aliases it; `poe hooks` re-installs hooks alone.
+  - *Why:* they run at completely different rhythms. Creating happens once per clone;
+    verifying happens every time you move network or re-auth to Tillicum — and the single
+    most common "everything is broken" cause is a dropped `ControlMaster`, which is a
+    one-second check. A verify command worth typing that often cannot be the same command
+    that provisions and sends email.
 - **Budget splits into two numbers: GPU dollars and agent dollars.**
   - *Was:* one `$5.10` column in `agent-status`, and `max_budget_usd` in the agent config
     read as if it covered both.
@@ -190,19 +195,32 @@ reach the human **directly**, by email and Slack, from the compute node.
   a threshold, or `finished` having never announced itself. That last one is the review's
   "tell me if they could not send the message", and it falls out of `decide` as one rule.
 
-**The credential this needs, and the line that does not move.** Sending from the compute
-node requires an SMTP app-password or a Slack webhook on Tillicum's shared filesystem. The
-spec forbade that and the ruling reverses it — but only the *storage*, not the handling:
+**The credential this needs, and the one mechanism it uses.** Sending from the compute node
+requires an SMTP app-password or a Slack webhook on Tillicum. The spec forbade secrets on
+the shared filesystem and the ruling reverses it — but there is **no new secrets mechanism**,
+because the repo already has one:
 
-- The human places `~/.slurm-agent/notify.env` on Tillicum (and on the laptop). **This repo
-  never writes it, never commits it, never echoes it, and no agent is ever asked to create
-  or read it** — the shim sources it, the agent only passes a subject and a body.
-- `poe init` **asserts mode `0600`** and fails loudly otherwise. Tillicum is a shared
-  filesystem; a group-readable app-password is the actual risk here, and it is the kind of
-  thing that is discovered late or never.
-- Errors from `smtplib` / the webhook POST are scrubbed of anything matching a
-  `SLURM_AGENT_SMTP_*` / `SLURM_AGENT_SLACK_*` value before they reach a log or a status
-  block, so a misconfiguration cannot leak the secret into a committed notebook.
+- **`.envrc` is where secrets live** — gitignored, never committed, one per machine, sitting
+  beside the code. That is already how the spec has an experiment repo's env work on
+  Tillicum ("a missing one stops the agent at `needs_env` naming the exact variables, for
+  the human to add to that directory's `.envrc`"), and the local manager now works the same
+  way. One convention everywhere, rather than a bespoke credentials file for notifications.
+- **The YAML declares key NAMES, never values.** `ManagerConfig.requires_env` names what the
+  local session needs; `AgentConfig.requires_env` already names what a remote agent needs.
+  Committed config stays reviewable and secret-free — "reviewing what an agent was allowed
+  to do means reading a file" extends to "reviewing what it was given" — and the same
+  `missing_env()` serves both sides.
+- **Values reach the process through the environment, not through a reader we wrote.**
+  `poe` loads `.envrc` for every task via `[tool.poe] envfile` (verified: it accepts both
+  `export KEY=v` and bare `KEY=v`, and ignores comments — so no `direnv` dependency), and
+  the remote launch already does `bash -lc 'source .envrc; exec …'`. `notify.py` and
+  `remote_notify.py` read `os.environ`. **There is no credentials parser in this design.**
+- `poe healthcheck` **asserts mode `0600`** on each `.envrc` holding declared secrets, and
+  fails loudly otherwise. Tillicum is a shared filesystem; a group-readable app-password is
+  the actual risk, and it is the kind of thing discovered late or never.
+- Errors from `smtplib` / the webhook POST are scrubbed of the values of every declared
+  `requires_env` key before they reach a log or a status block, so a misconfiguration
+  cannot leak a secret into a committed notebook.
 
 ## 0. Justify existence
 
@@ -325,11 +343,14 @@ The default answer is *don't build it*. What follows is what survived.
     Slack is a `urllib.request` POST of `{"text": …}` to an incoming webhook. **No
     dependency, and Slack stops being a deferred issue because it is five lines.**
   - *Smallest form:* `send_email`, `send_slack`, a `notify()` that fans out and returns
-    which channels worked, and `creds()` — the only reader of the secrets file, and the one
-    place that refuses a group-readable one. Two concrete functions, no `Notifier` ABC:
-    nothing swaps channels at runtime.
-  - *The part that is not code:* the human places `~/.slurm-agent/notify.env` at mode 0600
-    on both machines. This repo never writes, commits, echoes or asks an agent to read it.
+    which channels worked. Two concrete functions, no `Notifier` ABC: nothing swaps channels
+    at runtime.
+  - *No credentials reader, deliberately:* values come from `os.environ`, which `poe`'s
+    `envfile` and the remote launch's `source .envrc` already populate. The design that
+    needed a credentials parser and a bespoke secrets file was a second mechanism for no
+    reason; `.envrc` plus declared key names is the one the repo already had.
+  - *The part that is not code:* the human fills in `.envrc` on each machine. This repo
+    writes only the placeholder template, never a value.
 - **`assets/remote_notify.py` — the agent's outbound shim**
   - *Needs to exist:* yes — the compute node has the credential and no route back to the
     laptop, so this is how a 3am `needs_human` reaches a person.
@@ -346,29 +367,24 @@ The default answer is *don't build it*. What follows is what survived.
     dependency for 25 lines of text munging).
   - *Smallest form:* `usage()` (parse `hyakusage`), `digest()` (compare against the last
     **sent** ledger row), and three cron functions.
-- **`templates/envrc.example` and `templates/notify.env.example` — the copy-and-uncomment pair**
-  - *Needs to exist:* yes. Per-user wiring cannot live in a committed file — a second
-    person editing `config/cluster.yaml` dirties the tree and collides on every pull — and
-    "which variables do I even need?" is exactly the question a fresh clone should not have
-    to answer by reading source.
-  - *Already solved:* the *mechanism* is, by `direnv` and `os.environ`; what does not exist
-    is the **inventory**. These are documentation that happens to be executable.
-  - *Smallest form:* two files, every line commented out with a realistic placeholder and a
-    one-line explanation, copied by `poe init --create` if absent.
-  - *Why two and not one:* they have different destinations, different permissions and
-    different rules. `templates/envrc.example` → the repo-root `.envrc` (gitignored),
-    **identity only, never secrets**. `templates/notify.env.example` →
-    `~/.slurm-agent/notify.env` at 0600, on both machines, **secrets only**. Folding them
-    into one file would put an SMTP password one `.gitignore` slip away from a commit.
-  - *The guardrail that makes shipping them safe:* `poe init` **fails** if the repo-root
-    `.envrc` contains anything matching a secret name. Handing someone two similar files to
-    paste into is how a password ends up in the wrong one; the check names the offending
-    key and never its value.
-  - *The bound that stops it becoming a second config system:* `.envrc` carries **machine
-    identity and the location of the secrets file — nothing else**. Every real setting
-    stays in the YAML, where it is reviewable. Enforced by `ClusterConfig` reading a fixed,
-    short list of `SLURM_AGENT_*` overrides rather than a generic env-to-config merge.
-- **`preflight` — `poe init`**
+- **`templates/envrc.example` — the file `poe init` copies**
+  - *Needs to exist:* yes. "Which variables do I even need?" is exactly the question a fresh
+    clone should not answer by reading source, and it is not answerable from
+    `config/*.yaml` alone because the answer spans the manager and every agent config.
+  - *Already solved:* the mechanism is (`.envrc` + `os.environ`); the **inventory** is not.
+    This file is documentation that happens to be executable.
+  - *Smallest form:* one committed file, one `KEY=<secret-here>` line per declared key with
+    a one-line comment. `poe init` copies it to `.envrc` if absent and chmods 0600.
+  - *Generated, not hand-maintained:* the key list comes from `ManagerConfig.requires_env`
+    plus every `agents/*.yaml` `requires_env`, so the template cannot drift out of date the
+    way a hand-written setup doc does. A test asserts the committed example covers exactly
+    the declared union.
+  - *The guardrail that makes shipping it safe:* every value in the **committed** example is
+    the literal `<secret-here>`, asserted by a test — a real password reaching this file is
+    the one way a copyable template turns into a leak. And `poe healthcheck` fails on a
+    `.envrc` whose declared key is still `<secret-here>`, which is what turns "I copied it"
+    into "I filled it in".
+- **`preflight` — `poe init` and `poe healthcheck`**
   - *Needs to exist:* yes — "a fresh clone can prove it is set up", and it is where the
     spec's two unverified cluster assumptions get probed instead of discovered at 3am.
   - *Already solved:* no, but each check is 3–8 lines and they share `remote.run`.
@@ -461,24 +477,20 @@ class MonitorConfig(BaseModel):
 def load(path: Path, model: type[T]) -> T:
     """Parse one YAML file into one pydantic model. The only config entry point."""
     # yaml.safe_load(path.read_text())
-    # overlay any IDENTITY_OVERRIDES entry whose target model is `model` (set from .envrc)
     # model.model_validate(data)  -- extra="forbid" turns a typo into a load-time error
     raise NotImplementedError
 
 
-IDENTITY_OVERRIDES: dict[str, tuple[type[BaseModel], str]] = {
-    "SLURM_AGENT_LOGIN_HOST": (ClusterConfig, "login_host"),
-    "SLURM_AGENT_ACCOUNT":    (ClusterConfig, "account"),
-    "SLURM_AGENT_RUN_ROOT":   (ClusterConfig, "run_root"),
-    "SLURM_AGENT_NOTIFY_ENV": (NotifyConfig,  "env_file"),
-}
-"""The complete list of things a clone may override from its .envrc, and nothing more.
+class ManagerConfig(BaseModel):
+    """config/manager.yaml — the local session's own settings. The mirror of AgentConfig.
 
-Deliberately a FIXED SHORT MAP rather than a generic env-to-config merge: per-user identity
-has to live outside the committed YAML (a second person editing config/cluster.yaml dirties
-the tree and collides on every pull), but everything else belongs in the YAML where it is
-reviewable. A generic merge would quietly become a second, invisible config system.
-"""
+    `requires_env` names the environment KEYS the local manager needs and never their
+    values, exactly as AgentConfig.requires_env does for a remote agent. Values live in the
+    gitignored .envrc; committed config stays reviewable and secret-free.
+    """
+    model_config = ConfigDict(extra="forbid")
+    requires_env: list[str] = []      # e.g. SLURM_AGENT_SMTP_PASSWORD, SLURM_AGENT_SLACK_WEBHOOK
+    envrc: Path = Path(".envrc")      # where those keys are expected to be defined
 
 
 def duration_seconds(text: str) -> int:
@@ -994,24 +1006,17 @@ ABC: two concrete channels that never need to be swapped at runtime do not justi
 
 ```python
 class NotifyConfig(BaseModel):
-    """config/notify.yaml — channels and recipients. Secrets are NOT here; see creds()."""
+    """config/notify.yaml — channels and recipients. No secrets and no paths to secrets."""
     model_config = ConfigDict(extra="forbid")
     channels: list[Literal["email", "slack"]] = ["email"]
     to: str | None = None                # email recipient
     slack_channel: str | None = None     # optional override; the webhook has a default
-    env_file: Path = Path("~/.slurm-agent/notify.env")
 
 
-def creds(env_file: Path) -> dict[str, str]:
-    """Read the notify secrets. Refuses a file the group or world can read.
-
-    Tillicum's filesystem is shared, so a 0644 app-password is the real risk. This is the
-    only reader; nothing else in the repo touches these values, and none of them is ever
-    logged.
-    """
-    # stat -> if mode & 0o077: raise InsecureCredentialsError(path, oct(mode))
-    # parse KEY=VALUE lines (no shell, no export, no interpolation)
-    raise NotImplementedError
+# There is NO credentials reader in this design. Values arrive in os.environ: `poe` loads
+# .envrc for every task via [tool.poe] envfile, and the remote launch does
+# `bash -lc 'source .envrc; exec …'`. Writing a parser would have been a second secrets
+# mechanism competing with the one the repo already uses for every experiment repo.
 
 
 def send_email(subject: str, body: str, *, to: str, secrets: dict[str, str]) -> None:
@@ -1040,6 +1045,17 @@ def notify(subject: str, body: str, cfg: NotifyConfig) -> list[str]:
     raise NotImplementedError
 
 
+def scrub(text: str, keys: list[str]) -> str:
+    """Replace the value of every declared key with '***' wherever it appears in `text`.
+
+    Applied to every message that leaves this module. A bad password echoed by an SMTP
+    server must not reach a log, a status block or a committed notebook -- and `keys` is
+    exactly ManagerConfig/AgentConfig.requires_env, so the scrubber knows what is secret
+    for the same reason the checks do.
+    """
+    raise NotImplementedError
+
+
 def notify_test(cfg: NotifyConfig, run: Runner | None = None) -> list[Check]:
     """Really send one message per channel, from here and (with `run`) from Tillicum.
 
@@ -1052,88 +1068,118 @@ def notify_test(cfg: NotifyConfig, run: Runner | None = None) -> list[Check]:
 
 def notify_errors():
     """Error cases for notify."""
-    # env_file missing            -> FileNotFoundError naming the path and docs/setup.md
-    # env_file mode 0644 on the shared filesystem
-    #                             -> InsecureCredentialsError; never proceeds to read it
-    # SMTP auth rejected          -> NotifyError with the server's message, SCRUBBED of any
-    #                                value present in `secrets` (a bad password must not be
-    #                                echoed into a log, a status block or a notebook)
+    # a declared key is unset     -> MissingEnvError naming the KEYS and the .envrc to fix,
+    #                                the same error staging.missing_env raises for an agent
+    # a declared key still reads '<secret-here>'
+    #                             -> MissingEnvError too: copying the template is not
+    #                                filling it in, and the two must not look alike
+    # SMTP auth rejected          -> NotifyError with the server's message, run through
+    #                                scrub() (a bad password must not be echoed into a log,
+    #                                a status block or a notebook)
     # webhook returns non-2xx     -> NotifyError with status and the first 200 chars
     # one channel up, one down    -> no raise; notify() returns the channel that worked
     # every channel down          -> NotifyError; watch.act logs it and keeps the loop alive
 ```
 
-### `slurm_agent/preflight.py` — `poe init`
+### `slurm_agent/preflight.py` — `poe init` and `poe healthcheck`
+
+Two commands, because they answer two different questions at two different rhythms.
+**`init` creates**: run once, when wiring a fresh clone to the cluster. **`healthcheck`
+verifies**: run whenever you have moved network, re-authed to Tillicum, or want to know
+whether anything is wired wrong — so it has to be fast, and `poe hc` is the alias that
+makes it worth typing.
 
 ```python
 class Check(BaseModel):
     model_config = ConfigDict(extra="forbid")
     name: str
-    ok: bool
+    ok: bool | None                 # None = SKIPPED. A skipped proof is not a proof.
     detail: str
     fix: str | None = None
 
 
-def check_all(cluster: ClusterConfig, notify_cfg: NotifyConfig, *,
-              create: bool = True, send: bool = True) -> list[Check]:
-    """Everything a fresh clone needs, checked and (where safe) created.
+def init(cluster: ClusterConfig, manager: ManagerConfig, agents: list[AgentConfig],
+         *, send: bool = True) -> list[Check]:
+    """Create the local footprint, then hand off to a FULL healthcheck.
 
-    Run once, by a person, when wiring a new laptop to the cluster -- so it is allowed to
-    be thorough and slow, and it REALLY SENDS the notification messages rather than
-    inferring that it could. `--no-send` exists only for the re-run after fixing something
-    unrelated.
-
-    Two checks exist because the spec's Q&A demanded early verification of assumptions
-    every lease depends on. Finding out here costs a second; finding out at 3am costs a run.
-
-    The notify rows run on BOTH machines. An agent that finishes at 3am and cannot reach
-    you is the failure this whole feature exists to prevent, and it is silent by
-    construction -- so a successful setup ends with two real messages in your inbox, one
-    sent from the laptop and one sent from Tillicum.
+    Creates only what is safe to create and never a secret value:
+      - git hooks               `pre-commit install`
+      - ~/.ssh entries          from ssh_config_templates/, if absent
+      - .envrc                  from templates/envrc.example, chmod 0600, if absent --
+                                every declared key present with a `<secret-here>` value,
+                                so the file is complete and obviously unfinished
+      - cluster.run_root        mkdir -p over ssh
+    Then returns healthcheck(full=True, send=send). Setting a clone up and never proving
+    the notifications work is how you find out at 3am, so init sends by default.
     """
-    # git hooks         : pre-commit installed        (create: `pre-commit install`)
-    # ssh config        : login + node hosts present  (create: from ssh_config_templates/)
-    # cluster identity  : `ssh HOST id -un` works, ControlMaster socket live
-    # run root          : cluster.run_root exists     (create: mkdir -p over ssh)
-    # ALLOCATION PROBE  : `salloc --no-shell --time=00:01:00 …` then scancel — does the
+    raise NotImplementedError
+
+
+def healthcheck(cluster: ClusterConfig, manager: ManagerConfig, notify_cfg: NotifyConfig,
+                run: Runner, *, full: bool = False, send: bool = False) -> list[Check]:
+    """Is everything wired and working? FAST tier by default; `--full` adds the slow proofs.
+
+    The fast tier is the one you run after moving desks: seconds, no tokens, no GPU, no
+    messages sent. The full tier is what `init` runs and what you run before trusting an
+    overnight batch job.
+    """
+    # ---- FAST (always) -- seconds, free, no side effects ------------------------
+    # git hooks         : pre-commit installed
+    # ssh config        : login + node hosts present in ~/.ssh/config
+    # cluster identity  : `ssh HOST id -un` returns the expected user; ControlMaster live.
+    #                     THE reason `hc` exists -- a dropped ControlMaster after a network
+    #                     change is the single most common "everything is broken" cause,
+    #                     and it is a one-second check.
+    # .envrc present    : the file exists and is mode 0600 (local, and on the cluster)
+    # declared env      : missing_env(manager.requires_env) is empty, AND no declared key
+    #                     still reads `<secret-here>`. Reports KEY NAMES only, never values.
+    # agent env         : same for each agents/*.yaml requires_env, against its workdir
+    # run root          : cluster.run_root exists on the cluster
+    # node config       : ~/.ssh/<cluster>-node-config points at a node that is still mine
+    # usage monitor     : cron block installed (report only -- never installs silently)
+    #
+    # ---- FULL (--full; what `init` runs) -- slow, costs tokens or a queue slot ----
+    # ALLOCATION PROBE  : `salloc --no-shell --time=00:01:00 …` then scancel -- does the
     #                     allocation outlive the ssh that asked for it? Sets/echoes
     #                     allocation_mode, and reports whether a SECOND interactive
     #                     allocation is refused. VERIFIES the biggest lease assumption.
-    # AGENT CREDENTIAL  : `ssh HOST 'claude -p "reply OK" --output-format json'` — proves the
-    #                     subscription auth on Tillicum works headlessly, before any GPU
-    #                     spend, AND asserts total_cost_usd > 0: a subscription that reports
-    #                     zero cost would silently disarm --max-budget-usd
-    # BATCH             : `sbatch --test-only` on the rendered template — the partition
+    # AGENT CREDENTIAL  : `ssh HOST 'claude -p "reply OK" --output-format json'` -- proves
+    #                     the subscription auth works headlessly before any GPU spend, AND
+    #                     asserts total_cost_usd > 0: a subscription reporting zero would
+    #                     silently disarm --max-budget-usd
+    # BATCH             : `sbatch --test-only` on the rendered template -- the partition
     #                     accepts our walltime, checked without queueing anything
-    # local .envrc      : repo-root .envrc present    (create: copy templates/envrc.example)
-    # NO SECRETS IN REPO: the repo-root .envrc contains no key matching a secret name
-    #                     (SMTP_PASSWORD, SLACK_WEBHOOK, *_TOKEN, *_KEY). Shipping a
-    #                     copyable template invites pasting a password into the wrong one
-    #                     of the two files; this is the guardrail that makes the template
-    #                     safe, and it is a FAILURE naming the offending key -- never its
-    #                     value.
-    # NOTIFY CREDS (local)  : ~/.slurm-agent/notify.env exists, is mode 0600, and carries
-    #                     every key the configured channels need. Mode is a FAILURE, not a
-    #                     warning. (create: copy templates/notify.env.example at 0600 --
-    #                     an all-commented file, so it is created empty of secrets and the
-    #                     row still fails until a human fills it in.)
-    # NOTIFY CREDS (cluster): the same file on Tillicum, same mode assertion, over ssh.
-    #                     Two rows because they are two machines and either can be the one
-    #                     that is wrong -- the laptop sends the digest, the agents send
-    #                     from the compute node.
-    # NOTIFY SEND (local)   : really send one message per configured channel, from here.
-    # NOTIFY SEND (cluster) : really send one per channel, from Tillicum over ssh. This is
-    #                     the row that matters most and the one nothing else can stand in
-    #                     for: it is a DIFFERENT egress path, and it is the path every
-    #                     agent depends on. It also settles the Appendix A question of
+    #
+    # ---- SEND (--send; on by default from `init`) --------------------------------
+    # NOTIFY SEND (local)   : really send one message per configured channel, from here
+    # NOTIFY SEND (cluster) : really send one per channel, from Tillicum over ssh. The row
+    #                     nothing else can stand in for: a DIFFERENT egress path, and the
+    #                     one every agent depends on. Settles the Appendix A question of
     #                     whether compute-side egress reaches port 587 / hooks.slack.com.
-    #                     Both rows are skipped, and reported as skipped, under --no-send.
-    # usage monitor     : cron block installed        (report only — never install silently)
+    # Without --send both rows report ok=None (SKIPPED), never ok=True.
     raise NotImplementedError
 
 
 def render(checks: list[Check]) -> str:
-    """The spec's two-column report: name, ok/MISSING, detail. Exit non-zero if any failed."""
+    """The spec's report: name, ok/MISSING/SKIPPED, detail. Exit non-zero if any failed.
+
+    A SKIPPED row renders as SKIPPED and does not fail the run, but never renders as ok --
+    the whole point of the send rows is that only a delivered message proves delivery.
+    """
+    raise NotImplementedError
+
+
+def preflight_errors():
+    """Error cases for preflight."""
+    # .envrc missing            -> ok=False, fix: `poe init` (which creates it)
+    # .envrc mode 0644          -> ok=False naming the path and `chmod 600`. On a shared
+    #                              filesystem this is the real exposure, so it FAILS.
+    # declared key unset or still `<secret-here>`
+    #                           -> ok=False listing the KEY NAMES and the .envrc to edit.
+    #                              Never prints a value, not even a partial one.
+    # ssh unreachable           -> the identity row fails and every cluster-side row is
+    #                              SKIPPED rather than failed: one broken link must not
+    #                              render as eight independent problems.
     raise NotImplementedError
 ```
 
@@ -1143,7 +1189,9 @@ def render(checks: list[Check]) -> str:
 app = cyclopts.App(name="slurm-agent")
 
 @app.command
-def init(create: bool = True, send: bool = True) -> None: ...
+def init_cmd(send: bool = True) -> None: ...          # create, then a full healthcheck
+@app.command
+def healthcheck(full: bool = False, send: bool = False) -> None: ...   # `poe hc` aliases this
 @app.command(name="notify-test")
 def notify_test_cmd() -> None: ...      # really sends, from both machines
 @app.command(name="job-up")
@@ -1237,7 +1285,9 @@ with `if test():` blocks beside each function, per the Code Guide.
 
 **Repo root — new**
 
-- `pyproject.toml` — already scaffolded on `main`; this design adds: the six runtime deps above; the
+- `pyproject.toml` — already scaffolded on `main`; this design adds `[tool.poe] envfile = ".envrc"`
+  (which is how every command gets the secrets, verified to accept `export KEY=v`, bare
+  `KEY=v` and comments — so no `direnv` dependency), a `hc = {ref = "healthcheck"}` alias; the six runtime deps above; the
   `[project.scripts] slurm-agent = "slurm_agent.cli:app"` entry point; the `[tool.poe.tasks]`
   block (one `cmd` line per CLI command, plus the template's `nb`/`sync`/`clean`/`test`/
   `check`/`html`/`skill`, plus `hooks`); `[tool.juplit] notebook_src_dirs = ["slurm_agent",
@@ -1245,8 +1295,9 @@ with `if test():` blocks beside each function, per the Code Guide.
   `[tool.pytest.ini_options] norecursedirs = ["slurm_agent/assets"]` so the shipped shim is
   never collected as a test module.
 - `.gitignore` — on `main`; add `!sessions/**/*.ipynb` (the negation, or the session
-  evidence is preserved locally and never committed), `.envrc` (the copy is per-user and
-  the template is what is committed), `ledger.jsonl`, and `.slurm-agent/`
+  evidence is preserved locally and never committed), **`.envrc` (it holds the real
+  secrets; the placeholder template is what is committed)**, `ledger.jsonl`, and
+  `.slurm-agent/`
   (belt and braces — the run root lives on the cluster and outside every checkout, but a
   stray one inside a repo must never become a commit).
 - `.pre-commit-config.yaml`, `.github/workflows/ci.yml`, `mkdocs.yml`, `docs/index.md` —
@@ -1261,9 +1312,11 @@ with `if test():` blocks beside each function, per the Code Guide.
 
 - `cluster.yaml`, `supervision.yaml`, `monitor.yaml` — three configs, with the spec's
   values as defaults. `monitor.yaml` now carries cadence and thresholds only.
+- `manager.yaml` — the local session's own settings; `requires_env` names the environment
+  **keys** it needs, mirroring `AgentConfig.requires_env`.
 - `notify.yaml` — channels and recipients, shared by the digest, the supervision loop and
-  the agents. **Contains no secrets:** those live in `~/.slurm-agent/notify.env` at mode
-  0600 on each machine, placed by a human and never written by this repo.
+  the agents. **Contains no secrets and no path to any:** values live in the gitignored
+  `.envrc` on each machine, and every committed YAML names keys only.
 - `mcp.json` — the MCP server definitions `AgentConfig.mcp` names resolve against, passed
   to `claude --mcp-config`.
 
@@ -1274,8 +1327,8 @@ with `if test():` blocks beside each function, per the Code Guide.
 **`slurm_agent/` — new** (one module per §1 heading)
 
 - `__init__.py` — version, and `from juplit import test`.
-- `config.py` — `ClusterConfig`, `AgentConfig`, `SupervisionConfig`, `MonitorConfig`, `load`,
-  `duration_seconds`.
+- `config.py` — `ClusterConfig`, `ManagerConfig`, `AgentConfig`, `SupervisionConfig`,
+  `MonitorConfig`, `load`, `duration_seconds`.
 - `remote.py` — `Runner`, `RemoteError`, `ssh_runner`, `probe`.
 - `jobs.py` — `Job`, `job_list`, `job_up`, `job_down`, `job_shell_command`,
   `update_node_config` (the last two ported from `slurm-ops`, which stays public and
@@ -1285,9 +1338,9 @@ with `if test():` blocks beside each function, per the Code Guide.
   `continue_run`, `MissingEnvError`, `LeaseExhausted`, `ContentionError`.
 - `watch.py` — `AgentView`, `Decision`, `views`, `decide`, `act`, `watch`, `kill`.
 - `monitor.py` — `usage`, `digest`, `monitor_run`, `cron_write`, `cron_status`.
-- `notify.py` — `NotifyConfig`, `creds`, `send_email`, `send_slack`, `notify`,
-  `notify_test`, `NotifyError`, `InsecureCredentialsError`.
-- `preflight.py` — `Check`, `check_all`, `render`.
+- `notify.py` — `NotifyConfig`, `send_email`, `send_slack`, `notify`, `scrub`,
+  `notify_test`, `NotifyError`.
+- `preflight.py` — `Check`, `init`, `healthcheck`, `render`.
 - `cli.py` — the cyclopts app; every command 1–3 lines.
 
 **`slurm_agent/assets/` — new** (shipped data, never imported)
@@ -1312,16 +1365,14 @@ with `if test():` blocks beside each function, per the Code Guide.
 - `config`, `tillicum-node-config` — copied from `slurm-ops` so `poe init --create` has
   something to install.
 
-**`templates/` — new** (copy, uncomment, override — the fresh-clone setup path)
+**`templates/` — new**
 
-- `envrc.example` → the repo-root `.envrc` (gitignored). Machine identity only: the four
-  `SLURM_AGENT_*` names in `IDENTITY_OVERRIDES`. Header states in one line that **secrets
-  never go in this file** and points at the other one; `poe init` enforces it.
-- `notify.env.example` → `~/.slurm-agent/notify.env` at mode 0600, **on the laptop and on
-  Tillicum**. `SLURM_AGENT_SMTP_HOST/PORT/USER/PASSWORD`, `SLURM_AGENT_SLACK_WEBHOOK`.
-  Every line commented with a realistic placeholder, so copying it creates a valid file
-  containing no secrets — and `poe init` keeps failing until a human fills it in, which is
-  the right end state for a template you are meant to edit.
+- `envrc.example` → copied by `poe init` to the repo-root `.envrc` (gitignored, chmod 0600),
+  and the file a human copies to Tillicum by hand. One `KEY=<secret-here>` line per key
+  declared across `manager.yaml` and every `agents/*.yaml`, each with a one-line comment.
+  Every committed value is the literal `<secret-here>` — asserted by a test — and
+  `poe healthcheck` fails while any declared key still reads it, so "copied" and "filled
+  in" can never be confused.
 
 **`sessions/` — new**
 
@@ -1333,7 +1384,7 @@ with `if test():` blocks beside each function, per the Code Guide.
 - `conftest.py` — `fake_runner(mapping)`, the dict-backed `Runner` the whole suite injects,
   plus `fake_smtp` / `fake_webhook` so no test ever sends a real message.
 - `fixtures/` — `squeue.txt`, `probe.json`, `hyakusage.txt`, `envrc_sample`,
-  `notify_env_sample`, `envrc_with_secret` (for the no-secrets guard),
+  `envrc_unfilled` (a copied-but-not-edited template, for the `<secret-here>` guard),
   `notebook_4cells.ipynb`.
 
 **Removed:** `slurm_agent/example.py` (the template placeholder), in PR-01.
@@ -1350,11 +1401,13 @@ which case it lives in `tests/`. Every error case in §1 has a bullet here.
 - `load` — happy: a valid `agents/experiment-runner.yaml` round-trips to an `AgentConfig`.
 - `load` — error: an unknown key raises `ValidationError` naming that key (`extra="forbid"`).
 - `load` — error: a missing file raises `FileNotFoundError` mentioning `poe init`.
-- `load` — boundary: `SLURM_AGENT_LOGIN_HOST` in the environment overrides the YAML value;
-  unset, the YAML wins.
-- `load` — boundary: an env var **not** in `IDENTITY_OVERRIDES` is ignored, even when it
-  matches a `ClusterConfig` field name — the fixed map is the contract, and this is what
-  stops `.envrc` drifting into a second config system.
+- `ManagerConfig` — happy: `requires_env` round-trips as a list of key names.
+- **`templates/envrc.example` — the leak guard:** every value in the committed file is the
+  literal `<secret-here>`. A real credential reaching this file is the one way a copyable
+  template becomes a leak, so it is asserted rather than reviewed.
+- **`templates/envrc.example` — the drift guard:** its key set equals the union of
+  `manager.yaml`'s and every `agents/*.yaml`'s `requires_env`. Declare a key without adding
+  it to the template and the test fails.
 - `duration_seconds` — boundary: `"5m"`, `"04:00:00"`, `"90s"`, `"0"` all parse.
 - `duration_seconds` — error: `"four hours"` raises `ValueError`.
 
@@ -1480,17 +1533,13 @@ which case it lives in `tests/`. Every error case in §1 has a bullet here.
 
 **`notify.py`**
 
-- `creds` — happy: `fixtures/notify_env_sample` at 0600 parses to the expected keys.
-- `creds` — **error: a 0644 file raises `InsecureCredentialsError` and is never read** —
-  the shared-filesystem guard, and the single most important test in this module.
-- `creds` — error: a missing file raises `FileNotFoundError` naming `docs/setup.md`.
+- **Scrubbing — the security-relevant one:** `scrub` replaces every declared key's value
+  wherever it appears, and an SMTP rejection echoing the password produces a `NotifyError`
+  whose string contains **none** of them. Asserted by seeding a distinctive password.
 - `send_email` — happy: against a fake SMTP, issues `starttls` → `login` → `send_message`
   with the subject and recipient given.
 - `send_slack` — happy: POSTs `{"text": …}` to the webhook URL from the secrets.
 - `send_slack` — error: a non-2xx response raises `NotifyError` carrying the status.
-- **Scrubbing — error, and the security-relevant one:** an SMTP rejection whose message
-  echoes the password produces a `NotifyError` whose string contains **none** of the values
-  in `secrets`. Asserted by seeding a distinctive password and searching the exception text.
 - `notify` — boundary: one channel raising still returns the other as delivered, and does
   not raise. A reporter of crashes must not crash.
 - `notify` — error: every channel failing raises `NotifyError` (and `watch.act` logs it and
@@ -1502,24 +1551,29 @@ which case it lives in `tests/`. Every error case in §1 has a bullet here.
 
 **`preflight.py`**
 
-- `check_all` — happy: all checks pass against a fake runner and produce `ok=True` rows.
-- `check_all` — boundary: a failing check yields `ok=False` with a non-empty `fix`.
-- `check_all` — boundary: `create=False` never mutates (the fake runner sees no `mkdir`).
-- `check_all` — boundary: notify credentials are checked on **both** machines — the local
-  file and the one on Tillicum produce two rows, and either being wrong fails its own row.
-- `check_all` — boundary: a 0644 credentials file yields `ok=False` (not a warning).
-- `check_all` — happy: by default it **really sends**, once per channel per machine — the
-  fake SMTP and fake webhook each record one local and one cluster-side call.
-- `check_all` — boundary: `send=False` sends nothing and reports both send rows as
-  *skipped*, not as passed. A skipped proof must never read like a proof.
-- `check_all` — error: a repo-root `.envrc` containing `SLURM_AGENT_SMTP_PASSWORD` fails
-  the no-secrets row, and **the failure text names the key but not its value** (asserted by
-  seeding a distinctive value and searching the rendered report).
-- `check_all` — boundary: `create=True` on a fresh clone copies both templates, chmods
-  `notify.env` to 0600, and the notify-creds rows **still fail**, because an all-commented
-  template contains no usable credentials — the correct end state for a file a human must
-  edit.
-- `render` — happy: renders the spec's `name / ok|MISSING / detail` columns.
+- `healthcheck` — happy: everything wired produces `ok=True` rows against a fake runner.
+- `healthcheck` — boundary: a failing check yields `ok=False` with a non-empty `fix`.
+- `healthcheck` — boundary: **the fast tier runs no expensive probe** — the fake runner
+  sees no `salloc`, no `claude`, no `sbatch`, and the fake SMTP/webhook record zero calls.
+  This is what makes `poe hc` worth typing after every network change, so it is asserted.
+- `healthcheck` — boundary: `full=True` adds exactly the three slow rows.
+- `healthcheck` — boundary: `send=True` really sends, once per channel **per machine** —
+  the fakes record one local and one cluster-side call each.
+- `healthcheck` — boundary: `send=False` leaves both send rows at `ok=None`, and `render`
+  shows SKIPPED. A skipped proof must never render as a passed one.
+- `healthcheck` — error: a `.envrc` at 0644 yields `ok=False`, not a warning.
+- `healthcheck` — error: a declared key that is unset, and one still reading
+  `<secret-here>`, both fail — and **the report names the keys but no values** (asserted by
+  seeding a distinctive value and searching the rendered text).
+- `healthcheck` — boundary: ssh unreachable fails the identity row and marks every
+  cluster-side row SKIPPED, so one broken link does not render as eight problems.
+- `init` — happy: on a fresh clone it creates `.envrc` from the template at mode 0600, with
+  every declared key present.
+- `init` — boundary: `.envrc` already present is **never overwritten** — the one file in
+  this design that holds irreplaceable human input.
+- `init` — boundary: the `.envrc` it just created still **fails** the healthcheck rows,
+  because `<secret-here>` is not a credential. Creating and satisfying are different jobs.
+- `render` — happy: renders `name / ok|MISSING|SKIPPED / detail`.
 
 **`cli.py`**
 
@@ -1533,7 +1587,7 @@ their captured output committed as the fixtures the tests above read.
 
 ## 5. Estimated scope
 
-Roughly **37 files, ~2,180 lines added, 0 modified** — a greenfield repo, so nearly all of
+Roughly **36 files, ~2,150 lines added, 0 modified** — a greenfield repo, so nearly all of
 it is new; ~40% of the Python is `if test():` blocks and their fixtures. The review's batch
 mode and hooks added ~200 lines net, which is small because both reuse the interactive
 path wholesale: batch changes only how the job is submitted, and the hooks are JSON.
@@ -1551,11 +1605,12 @@ path wholesale: batch changes only how the job is submitted, and the hooks are J
 - `slurm_agent/launch.py` — ~300 (`prepare_run` + `launch` + `launch_batch`)
 - `slurm_agent/watch.py` — ~290
 - `slurm_agent/monitor.py` — ~170
-- `slurm_agent/notify.py` — ~150 (two channels, `creds`, scrubbing, `notify_test`)
+- `slurm_agent/notify.py` — ~120 (two channels, `scrub`, `notify_test`; no creds reader)
 - `slurm_agent/assets/remote_notify.py` — ~40
 - `config/notify.yaml` — ~15
-- `templates/envrc.example`, `templates/notify.env.example` — ~60 (nearly all comments)
-- `slurm_agent/preflight.py` — ~180 (four notify rows across two machines)
+- `templates/envrc.example` — ~30 (nearly all comments)
+- `config/manager.yaml` — ~10
+- `slurm_agent/preflight.py` — ~200 (`init` + a two-tier `healthcheck`)
 - `slurm_agent/cli.py` — ~120
 - `config/*.yaml`, `config/mcp.json`, `agents/experiment-runner.yaml` — ~90
 - `prompts/agent_launch.md.jinja`, `sessions/_template.py`, `ssh_config_templates/*` — ~90
@@ -1584,9 +1639,10 @@ every layer ships its own tests. Branches are rooted at
 
 - **`claude/slurm-agent-orchestration-v8jauv-01-scaffold`**
   - *Lands:* `config.py` and the four pydantic models with their YAML files, plus
-    `IDENTITY_OVERRIDES` and `templates/envrc.example`; `remote.py` (`ssh_runner`,
-    `RemoteError`); the cyclopts app and the poe inventory as stubs; `tests/conftest.py`,
-    `CLAUDE.md`. Deletes the template's `slurm_agent/example.py`.
+    `ManagerConfig` and `config/manager.yaml`; `templates/envrc.example` and the
+    `[tool.poe] envfile` wiring; `remote.py` (`ssh_runner`, `RemoteError`); the cyclopts app
+    and the poe inventory as stubs; `tests/conftest.py`, `CLAUDE.md`. Deletes the
+    template's `slurm_agent/example.py`.
   - *Already on `main`:* the cookiecutter scaffold — poe tasks, jupytext pairing, the juplit
     pre-commit hooks and CI — committed as the repo's root commit, so no PR spends review
     on generated boilerplate.
@@ -1614,7 +1670,7 @@ every layer ships its own tests. Branches are rooted at
   - *Depends on:* `…-03-staging`.
 - **`…-05-notify`**
   - *Lands:* `notify.py`, `assets/remote_notify.py`, `config/notify.yaml`,
-    `templates/notify.env.example`, the `SessionEnd` notify hook, and `poe notify-test`.
+    the `SessionEnd` notify hook, and `poe notify-test`.
   - *Stands alone because:* "I can reach you on email and Slack, from the laptop and from
     Tillicum" is a complete capability with its own proof — `poe notify-test` — and it
     needs nothing above it. It sits here rather than with the monitor because it has three
@@ -1642,11 +1698,11 @@ every layer ships its own tests. Branches are rooted at
   - *Depends on:* `…-05-notify` in principle, `…-07-batch` in practice (stacked to keep the
     merge order linear rather than because it needs the code).
 - **`…-09-init-skills-docs`**
-  - *Lands:* `preflight.py` and `poe init` — including the four notify rows across both
-    machines; `.claude/skills/slurm-orchestration.md`; `sessions/_template.py` and
-    `poe session-new`; `docs/setup.md` (where a human is told how to place
-    `notify.env`); the README command reference.
-  - *Stands alone because:* `poe init` can only check things once they all exist, and the
+  - *Lands:* `preflight.py`, `poe init`, and `poe healthcheck` / `poe hc` with both tiers;
+    `.claude/skills/slurm-orchestration.md`; `sessions/_template.py` and `poe session-new`;
+    `docs/setup.md` (where a human is told how to fill in `.envrc` on both machines); the
+    README command reference.
+  - *Stands alone because:* the healthcheck can only check things once they all exist, and the
     skill can only describe a workflow once the workflow runs. This layer is the repo
     becoming self-describing.
   - *Depends on:* `…-08-monitor`.
@@ -1779,15 +1835,17 @@ reasoning survives the PR thread.
     deferred repo issue the spec's Q&A imagined, because an incoming webhook is a stdlib
     POST — see Appendix B.
   - *What did not change — and this is the part worth holding to:* the spec's sentence is
-    reversed only as to **storage**, not handling. A human places
-    `~/.slurm-agent/notify.env` at mode 0600 on each machine; this repo never writes it,
-    never commits it, never echoes it, and never asks an agent to read or create it. `creds`
-    is its only reader and **refuses a group- or world-readable file outright** — on a
-    shared filesystem that is the real exposure. Notify errors are scrubbed of the secret
-    values before they can reach a log, a status block or a committed notebook.
-  - *And it is verified rather than assumed:* `poe init` checks the credentials on **both**
-    machines, proves each channel is reachable without sending, and fails until
-    `poe notify-test` has actually delivered at least once.
+    reversed only as to **storage**, not handling. Secrets live in the gitignored `.envrc`
+    on each machine — **the mechanism the spec already uses for every experiment repo**,
+    not a new one — and the committed YAML names keys only, never values, exactly as
+    `AgentConfig.requires_env` already did. `poe init` writes the placeholder template and
+    never a value; `poe healthcheck` fails a `.envrc` the group or world can read, which on
+    a shared filesystem is the real exposure; and every message leaving `notify.py` is run
+    through `scrub()` so a bad password echoed by an SMTP server cannot reach a log, a
+    status block or a committed notebook.
+  - *And it is verified rather than assumed:* `poe init` runs a full healthcheck that
+    really sends from **both** machines, so a clone is not considered set up until two real
+    messages have arrived.
 
 ## Approval
 
