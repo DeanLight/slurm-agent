@@ -12,7 +12,7 @@ import os
 
 import cyclopts
 
-from slurm_agent.config import AgentConfig, ClusterConfig, load
+from slurm_agent.config import AgentConfig, ClusterConfig, SupervisionConfig, load
 
 app = cyclopts.App(name="slurm-agent", help="Drive Tillicum jobs and remote Claude agents.")
 
@@ -33,6 +33,15 @@ def _runner():
 
 def _agent(kind: str) -> AgentConfig:
     return load(f"agents/{kind}.yaml", AgentConfig)
+
+
+def _views():
+    from slurm_agent import watch as supervisor
+    from slurm_agent.remote import probe
+
+    cluster, run = _cluster(), _runner()
+    snapshot = probe(run, cluster.run_root)
+    return snapshot, supervisor.views(snapshot, cluster), cluster, run
 
 
 # ── setup ────────────────────────────────────────────────────────────────────────
@@ -119,7 +128,16 @@ def agent_batch(task: str, agent: str, time: str | None = None,
 @app.command(name="agent-status")
 def agent_status() -> None:
     """One line per live remote agent, from the polled status block."""
-    _pending("06-supervise")
+    _, rows, _, _ = _views()
+    if not rows:
+        print("no remote agents")
+        return
+    for v in rows:
+        left = f"{(v.time_left_s or 0) // 60}m left" if v.time_left_s else "—"
+        spend = f"${v.gpu_usd:.2f} gpu" + (f" · ${v.agent_usd:.2f} agent" if v.agent_usd else "")
+        waiting = f" · waiting on {', '.join(v.waiting_on)}" if v.waiting_on else ""
+        print(f"{v.session_id[:4]}  {v.task:<10} {v.state:<11} "
+              f"round {v.round or '—':<5} {left:<10} {spend}{waiting}")
 
 
 @app.command(name="agent-logs")
@@ -143,19 +161,40 @@ def agent_logs(session: str, cells: bool = False, tail: int = 50) -> None:
 @app.command(name="agent-watch")
 def agent_watch(once: bool = False, auto_renew: bool = False) -> None:
     """The supervision loop: poll, decide, act, log."""
-    _pending("06-supervise")
+    from slurm_agent import watch as supervisor
+
+    supervisor.watch(_runner(), _cluster(), load("config/supervision.yaml", SupervisionConfig),
+                     once=once, auto_renew=auto_renew)
 
 
 @app.command(name="agent-kill")
 def agent_kill(session: str, reason: str) -> None:
     """Stop one agent, recording the reason the way an automatic kill is recorded."""
-    _pending("06-supervise")
+    from slurm_agent import watch as supervisor
+
+    _, rows, _, run = _views()
+    match = next((v for v in rows if v.session_id.startswith(session)), None)
+    if match is None:
+        live = ", ".join(v.session_id[:8] for v in rows) or "none"
+        raise SystemExit(f"no live session {session!r} — live sessions: {live}")
+    target = supervisor.kill_step(match, run, reason=reason)
+    print(f"killed {match.session_id[:8]} ({target or 'no step found'}) · {reason}")
 
 
 @app.command(name="agent-continue")
 def agent_continue(session: str, job: str | None = None) -> None:
     """A fresh lease on the same notebook: done rounds skip."""
-    _pending("06-supervise")
+    import json
+
+    from slurm_agent import launch as launcher
+    from slurm_agent.remote import remote_path
+
+    cluster, run = _cluster(), _runner()
+    run_dir = remote_path(f"{cluster.run_root.rstrip('/')}/{session}")
+    record = json.loads(run(f"cat {run_dir}/launch.json"))
+    cfg = _agent(record.get("agent_kind", "experiment-runner"))
+    launcher.continue_run(session, job or record.get("job_name", ""), run, cluster, cfg)
+    print(f"continued {session} · lease {record['leases_used'] + 1}/{record['max_leases']}")
 
 
 # ── polling and tidying ──────────────────────────────────────────────────────────
