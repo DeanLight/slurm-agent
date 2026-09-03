@@ -16,9 +16,11 @@ class FakeRunner:
     def __init__(self, responses: dict[str, str] | None = None):
         self.responses = responses or {}
         self.commands: list[str] = []
+        self.stdins: list[str | None] = []
 
     def __call__(self, command: str, stdin: str | None = None) -> str:
         self.commands.append(command)
+        self.stdins.append(stdin)
         for needle, output in self.responses.items():
             if needle in command:
                 return output

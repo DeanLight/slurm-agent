@@ -1,0 +1,68 @@
+{
+ "now": 1000000,
+ "queue": "dev|62526|g004|R|02:00:00|01:00:00|cpu=8,mem=200G,gres/gpu=2|\nsa-ablation|62531|g011|R|00:05:00|11:55:00|cpu=8,gres/gpu=4|\n",
+ "runs": [
+  {
+   "run_dir": "/home/d/.slurm-agent/runs/4f2c",
+   "nb_mtime": 999400,
+   "nb_bytes": 4096,
+   "status_mtime": 999880,
+   "launch": {
+    "session_id": "4f2c",
+    "task": "TASK-104",
+    "job_id": "62526",
+    "mode": "interactive",
+    "leases_used": 2,
+    "max_leases": 4
+   },
+   "status": {
+    "state": "running",
+    "round": "2/3",
+    "cells_done": 14,
+    "waiting_on": []
+   }
+  },
+  {
+   "run_dir": "/home/d/.slurm-agent/runs/7b19",
+   "nb_mtime": 0,
+   "nb_bytes": 0,
+   "status_mtime": 998000,
+   "launch": {
+    "session_id": "7b19",
+    "task": "TASK-102",
+    "job_id": "62531",
+    "mode": "batch",
+    "leases_used": 1,
+    "max_leases": 1
+   },
+   "status": {
+    "state": "needs_env",
+    "waiting_on": [
+     "HF_TOKEN"
+    ],
+    "cells_done": 3
+   }
+  },
+  {
+   "run_dir": "/home/d/.slurm-agent/runs/9c03",
+   "nb_mtime": 990000,
+   "nb_bytes": 8192,
+   "status_mtime": 990100,
+   "launch": {
+    "session_id": "9c03",
+    "task": "TASK-099",
+    "job_id": "61000",
+    "mode": "batch",
+    "leases_used": 1,
+    "max_leases": 1
+   },
+   "status": {
+    "state": "finished",
+    "cells_done": 21,
+    "announced_on": [
+     "email"
+    ]
+   }
+  }
+ ]
+}
