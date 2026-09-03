@@ -1,0 +1,9 @@
+# Where messages go. NO secrets here and no path to any — values live in .envrc, and
+# config/manager.yaml names the keys.
+channels: [email, slack]
+
+# Who gets the email. The digest, supervision escalations and the agents all use this.
+to: deanlcs@cs.washington.edu
+
+# Optional Slack channel override; the incoming webhook already has a default.
+slack_channel: null

@@ -26,7 +26,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "python3 {{ run_dir }}/remote_status.py finish --log-dir {{ log_dir }}"
+            "command": "python3 {{ run_dir }}/remote_status.py finish --log-dir {{ log_dir }} && python3 {{ run_dir }}/remote_notify.py --from-status"
           }
         ]
       }
