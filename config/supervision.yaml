@@ -1,0 +1,22 @@
+# What "stuck" means, written down, so a kill is a rule firing rather than a judgement call.
+# Every kill is recorded with the threshold that fired and the state at the time.
+poll_every: 5m
+
+# needs_env / needs_human: nobody is appearing in the next four hours, so stop paying.
+blocked_for: 15m
+
+# The agent's own status block has not been updated while the job is RUNNING. With the
+# SessionEnd/Stop hooks in place this means "no turn has completed", not "the agent forgot".
+status_stale_for: 30m
+
+# OBSERVED progress: the notebook file itself has not changed. Deliberately independent of
+# the status block — a stuck-agent detector must not depend on the stuck agent's self-report.
+no_progress_for: 45m
+
+gpu_idle_for: 20m
+
+# How close to the end of a lease the manager proposes renewal. Rules kill; the manager
+# renews — renewal needs a human reading the log, which a threshold cannot do.
+renew_when_time_left: 10m
+
+on_kill: keep_staged

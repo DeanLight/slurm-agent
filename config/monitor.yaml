@@ -1,0 +1,9 @@
+# Cadence and thresholds for the scheduled usage digest.
+# Channels and recipients live in config/notify.yaml — the digest is not the only sender.
+every_days: 3
+
+# Silence has to mean "nothing changed", so a message always means something did.
+only_if_changed: true
+
+budget_used_pct: 80
+idle_gpu_hours: 2.0

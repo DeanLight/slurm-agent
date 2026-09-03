@@ -4,7 +4,14 @@ version = "0.1.0"
 description = ""
 authors = [{name = "Dean Light"}]
 requires-python = ">=3.12"
-dependencies = []
+dependencies = [
+    "cyclopts>=2.0.0",
+    "jinja2>=3.1",
+    "juplit>=0.1.0",
+    "pydantic>=2.6",
+    "pyyaml>=6.0",
+    "structlog>=24.1",
+]
 
 [build-system]
 requires = ["uv_build>=0.9.21,<0.10.0"]
@@ -26,18 +33,56 @@ dev = [
     "mkdocstrings[python]>=0.24.0",
 ]
 
+[tool.poe]
+# Every task gets the secrets from .envrc. Verified to accept `export KEY=v`, bare
+# `KEY=v` and comments — which is why this repo needs no direnv dependency.
+envfile = ".envrc"
+
 [tool.poe.tasks]
-init         = {cmd = "pre-commit install", help = "Install git hooks"}
+# ── notebook plumbing (from the juplit template) ────────────────────────────────
+hooks        = {cmd = "pre-commit install", help = "Install git hooks"}
 sync         = {cmd = "juplit sync", help = "Sync .py<->ipynb for all paired notebooks"}
 nb           = {cmd = "juplit nb",   help = "Generate .ipynb from .py files (run after cloning)"}
 clean        = {cmd = "juplit clean",help = "Sync then delete all .ipynb files"}
 test         = {cmd = "pytest",      help = "Run tests"}
 check        = {cmd = "juplit check", help = "Fail if a committed notebook's outputs contradict its .py"}
-html         = {cmd = "juplit html",  help = "Render a notebook to standalone HTML (nbconvert)"}
+html         = {cmd = "juplit html",  help = "Render a notebook to standalone HTML"}
 skill        = {shell = "mkdir -p .claude/skills && juplit skill > .claude/skills/juplit-programming.md && echo 'wrote .claude/skills/juplit-programming.md'", help = "Install/refresh the juplit skill for Claude Code"}
-docs         = {cmd = "mkdocs serve",          help = "Serve docs locally for preview"}
-docs-build   = {cmd = "mkdocs build",          help = "Build docs site"}
+docs         = {cmd = "mkdocs serve", help = "Serve docs locally for preview"}
+docs-build   = {cmd = "mkdocs build", help = "Build docs site"}
 docs-deploy  = {cmd = "mkdocs gh-deploy --force", help = "Deploy docs to GitHub Pages"}
+
+# ── setup ───────────────────────────────────────────────────────────────────────
+init         = {cmd = "slurm-agent init", help = "Create the local footprint, then run a full healthcheck"}
+healthcheck  = {cmd = "slurm-agent healthcheck", help = "Is everything wired and working? Fast by default"}
+hc           = {ref = "healthcheck", help = "Alias for healthcheck — quick to run after moving network"}
+
+# ── allocations ─────────────────────────────────────────────────────────────────
+job-up       = {cmd = "slurm-agent job-up", help = "Bring up an allocation, or reattach to one"}
+job-status   = {cmd = "slurm-agent job-status", help = "Every allocation of mine, one line each"}
+job-shell    = {cmd = "slurm-agent job-shell", help = "Shell on the allocation's compute node"}
+job-down     = {cmd = "slurm-agent job-down", help = "Cancel the allocation"}
+
+# ── remote agents ───────────────────────────────────────────────────────────────
+agent-run      = {cmd = "slurm-agent agent-run", help = "Stage a repo and launch an agent on an allocation"}
+agent-batch    = {cmd = "slurm-agent agent-batch", help = "Submit an agent as a self-terminating sbatch job"}
+agent-status   = {cmd = "slurm-agent agent-status", help = "One line per live remote agent"}
+agent-logs     = {cmd = "slurm-agent agent-logs", help = "Read a remote notebook or log in place"}
+agent-watch    = {cmd = "slurm-agent agent-watch", help = "The supervision loop: poll, decide, act, log"}
+agent-kill     = {cmd = "slurm-agent agent-kill", help = "Stop one agent, recording the reason"}
+agent-continue = {cmd = "slurm-agent agent-continue", help = "A fresh lease on the same notebook"}
+
+# ── polling and tidying ─────────────────────────────────────────────────────────
+status       = {cmd = "slurm-agent status", help = "What is running, queued, completed and failed"}
+flush        = {cmd = "slurm-agent flush", help = "Drop finished runs from status"}
+
+# ── notifications and usage ─────────────────────────────────────────────────────
+notify-test       = {cmd = "slurm-agent notify-test", help = "Really send one message per channel"}
+monitor-run       = {cmd = "slurm-agent monitor-run", help = "Poll usage; send only if spend moved"}
+monitor-install   = {cmd = "slurm-agent monitor-install", help = "Install the digest schedule here"}
+monitor-uninstall = {cmd = "slurm-agent monitor-uninstall", help = "Remove the digest schedule"}
+monitor-status    = {cmd = "slurm-agent monitor-status", help = "Is the schedule on, and when does it fire"}
+session-new       = {cmd = "slurm-agent session-new", help = "Scaffold a session artifact notebook"}
 
 [tool.juplit]
 notebook_src_dirs = ["slurm_agent", "docs"]
@@ -46,12 +91,17 @@ notebook_src_dirs = ["slurm_agent", "docs"]
 # deliverable (experiment notebooks). Their outputs survive nb / sync / clean, and
 # `juplit check` fails if they stop matching the .py that produced them.
 # Remember to un-ignore each one in .gitignore — see the comment there.
-artifact_notebooks = []   # e.g. ["experiments/**/*.py"]
+artifact_notebooks = ["sessions/**/*.py"]
 
 [tool.jupytext]
 formats = "ipynb,py:percent"
 
+[project.scripts]
+slurm-agent = "slurm_agent.cli:main"
+
 [tool.pytest.ini_options]
+# Shipped assets are copied to the cluster and run there; they are not our test modules.
+norecursedirs = ["slurm_agent/assets", "templates"]
 python_files = ["*.py"]
 python_classes = ["Test*"]
 python_functions = ["test_*"]

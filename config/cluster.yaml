@@ -1,0 +1,15 @@
+# How to reach the cluster, and what an hour on it costs.
+# Per-machine overrides do not belong here — see templates/envrc.example.
+login_host: tillicum-login
+node_config_path: ~/.ssh/tillicum-node-config
+default_qos: interactive
+gpu_usd_per_hour: 0.90
+
+# Launch records, status blocks and agent logs live here, on the CLUSTER. Never inside a
+# staged repo: stage() refuses a dirty tree, and that refusal is what stops an experiment
+# silently measuring unreviewed code.
+run_root: ~/.slurm-agent/runs
+
+# Can an allocation outlive the ssh that asked for it? `poe healthcheck --full` probes it.
+# Fall back to `tmux` if the site refuses `salloc --no-shell`.
+allocation_mode: no_shell

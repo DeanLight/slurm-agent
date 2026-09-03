@@ -1,0 +1,23 @@
+# Copy this to .envrc (`poe init` does it for you), then replace every <secret-here>.
+#
+#   cp templates/envrc.example .envrc && chmod 600 .envrc
+#
+# .envrc is gitignored and holds the REAL values. This file is committed and must never
+# hold one — a test asserts every value below is literally <secret-here>.
+#
+# The same file is needed on Tillicum, so remote agents can reach you from the compute
+# node. Put it beside the repo they run in, at mode 0600.
+#
+# Every key here is declared in config/manager.yaml or an agents/*.yaml `requires_env`;
+# `poe healthcheck` tells you which are still missing or unfilled.
+
+# ── email (the usage digest, and agents announcing themselves) ──────────────────
+SLURM_AGENT_SMTP_HOST=<secret-here>
+SLURM_AGENT_SMTP_PORT=<secret-here>
+SLURM_AGENT_SMTP_USER=<secret-here>
+# An app password, never your account password.
+SLURM_AGENT_SMTP_PASSWORD=<secret-here>
+
+# ── slack (optional; drop it from config/manager.yaml if you do not want it) ────
+# An incoming webhook URL: https://api.slack.com/messaging/webhooks
+SLURM_AGENT_SLACK_WEBHOOK=<secret-here>
