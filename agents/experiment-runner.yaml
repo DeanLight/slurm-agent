@@ -1,0 +1,37 @@
+# The reference agent: runs an experiment matrix and writes it up as an artifact notebook.
+#
+# This file is the audit surface. Reviewing what this agent was allowed to do means
+# reading it — no value here is a secret, only the NAMES of the keys it needs.
+repo: DeanLight/deepreasoner-baselines
+ref: claude/exp14-decomp-longdoc
+workdir: ~/work/deepreasoner-baselines
+notebook: experiments/{EXP_ID}/run.py
+
+# Checked BEFORE launch, so a missing token costs a refusal instead of a GPU-hour.
+requires_env:
+  - HF_TOKEN
+  - OPENAI_BASE_URL
+
+skills: [experiment-execution, juplit-programming]
+mcp: [notion, github]
+
+allowed_tools:
+  - Read
+  - Edit
+  - Write
+  - "Bash(uv run *)"
+  - "Bash(juplit *)"
+  - "Bash(git *)"
+  - "Bash(sbatch *)"
+  - "Bash(squeue *)"
+  - "Bash(python3 *)"
+
+# A runaway guard on list-priced token spend, NOT a bill: under a subscription the real
+# limit is the plan's usage window, which the CLI does not expose. Do not reconcile this
+# against an invoice.
+max_budget_usd: 8
+
+mode: interactive
+lease: "04:00:00"     # a supervision interval, not a work estimate
+max_leases: 4
+batch_time: "12:00:00"
