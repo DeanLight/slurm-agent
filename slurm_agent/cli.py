@@ -120,9 +120,16 @@ def agent_run(task: str, job: str, agent: str, exp_id: str | None = None) -> Non
 
 @app.command(name="agent-batch")
 def agent_batch(task: str, agent: str, time: str | None = None,
-                exp_id: str | None = None) -> None:
+                exp_id: str | None = None, gpus: int = 1) -> None:
     """Submit the same agent as a self-terminating sbatch job."""
-    _pending("08-batch")
+    from slurm_agent import launch as launcher
+
+    cfg = _agent(agent)
+    session, job_id = launcher.launch_batch(cfg, task, _runner(), _cluster(),
+                                            exp_id=exp_id, time_limit=time, gpus=gpus)
+    print(f"submitted batch job {job_id} · session {session}")
+    print(f"walltime {time or cfg.batch_time} · budget ${cfg.max_budget_usd} · "
+          "ends by itself when the agent exits")
 
 
 @app.command(name="agent-status")

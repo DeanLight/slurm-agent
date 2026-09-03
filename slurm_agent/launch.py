@@ -352,3 +352,82 @@ if test():
         assert "agent-batch" in str(exc)
         assert not contended.asked("git clone")      # refused before any staging work
         display(str(exc))
+
+
+# %% [markdown]
+# ## Batch
+#
+# Tillicum permits one interactive allocation, so anything overnight or running alongside
+# a human's session has to be a batch job. Batch jobs are not capped the same way, need
+# nobody present, and **end by themselves**: the `claude` run is the script's last
+# statement, so the job finishes exactly when the agent's process exits.
+#
+# Everything downstream is unchanged — same staging, argv, run root, status block, hooks,
+# probe and `decide`. Batch is a *submission* difference, not a second system.
+
+# %%
+def launch_batch(agent: AgentConfig, task: str, run: Runner, cluster: ClusterConfig, *,
+                 exp_id: str | None = None, time_limit: str | None = None,
+                 gpus: int = 1, cpus: int = 8, mem: str = "200G") -> tuple[str, str]:
+    """Submit the same agent as an sbatch job. Returns (session_id, job_id)."""
+    session_id, run_dir, sha = prepare_run(agent, task, run, cluster, exp_id)
+    notebook = agent.notebook.replace("{EXP_ID}", exp_id or task.lower())
+    prompt = launch_prompt(agent, task=task, notebook=notebook, run_dir=run_dir, sha=sha)
+    argv = claude_argv(
+        agent, prompt=prompt, session_id=session_id,
+        settings_path=f"{run_dir}/settings.json",
+        mcp_config_path=f"{run_dir}/mcp.json" if agent.mcp else None,
+    )
+    if agent.mcp:
+        _write_remote(run, f"{remote_path(run_dir)}/mcp.json", Path("config/mcp.json").read_text())
+
+    script = render(
+        "job.sbatch.jinja", session_short=session_id[:8], gpus=gpus, cpus=cpus, mem=mem,
+        time_limit=time_limit or agent.batch_time, qos=cluster.default_qos,
+        account=cluster.account, run_dir=remote_path(run_dir),
+        workdir=remote_path(agent.workdir),
+        claude_command=" ".join(quote(a) for a in argv),
+    )
+    _write_remote(run, f"{remote_path(run_dir)}/job.sbatch", script)
+    job_id = run(f"sbatch --parsable {remote_path(run_dir)}/job.sbatch").strip().split(";")[0]
+
+    record = json.loads(run(f"cat {remote_path(run_dir)}/launch.json"))
+    record.update({"job_id": job_id, "mode": "batch"})
+    _write_remote(run, f"{remote_path(run_dir)}/launch.json",
+                  json.dumps(record, indent=1, sort_keys=True))
+    log.info("launch.batch", session=session_id, job=job_id, task=task)
+    return session_id, job_id
+
+
+# %%
+if test():
+    # Ordered: the fake returns the FIRST matching key, so the launch.json read must be
+    # matched before the generic `cat` that serves the .envrc read.
+    staged = {"cat \"$HOME\"/.slurm-agent": '{"leases_used": 1, "max_leases": 4}',
+              "squeue --job": "", "squeue": squeue, "test -e": "yes", "test -d": "yes",
+              "status --porcelain": "", "rev-parse": "a1b2c3d4\n", "test -f": "yes",
+              "cat": "export HF_TOKEN=real\n", "sbatch": "62999;tillicum\n"}
+    batch_runner = FakeRunner(staged)
+    session, job_id = launch_batch(agent, "TASK-104", batch_runner, cluster,
+                                   time_limit="12:00:00", gpus=2)
+    assert job_id == "62999"
+
+    script = [c for c in batch_runner.commands if "job.sbatch <<" in c][0]
+    argv_tail = claude_argv(agent, prompt="p", session_id="s",
+                            settings_path="x", mcp_config_path="m")[-1]
+    assert "#SBATCH --time=12:00:00" in script
+    assert "#SBATCH --gpus=2" in script
+    assert "SLURM_AGENT_RUN_DIR" in script
+    display(script.split("\n")[1:8])
+
+
+# %%
+if test():
+    # Self-termination rests entirely on the claude run being the LAST statement, so it is
+    # asserted rather than assumed. The prompt is a quoted multi-line argument, so the
+    # check is that the script ENDS inside that command: nothing runs after the agent.
+    body = script.split("<<'SLURM_AGENT_EOF'\n", 1)[1].rsplit("\nSLURM_AGENT_EOF", 1)[0]
+    assert "\nexec claude " in body
+    tail = body[body.index("\nexec claude "):].rstrip()
+    assert tail.endswith(quote(argv_tail)), tail[-80:]
+    display(tail[:80] + " … " + tail[-60:])
