@@ -172,6 +172,32 @@ work, hard work, and anything running in parallel with a human's interactive ses
 `AgentConfig.mode: interactive | batch` picks the default per agent kind; the CLI command
 chosen (`agent-run` vs `agent-batch`) overrides it.
 
+### Polling the whole picture: `poe status` and `poe flush`
+
+`agent-status` and `job-status` answer "what is live right now". Neither answers the
+question a human actually asks between sessions — **what is running, what is queued, what
+finished, and what failed** — because the last two are precisely the ones that have left
+`squeue`. A finished job vanishes from the queue within minutes.
+
+- **`poe status` is the poll.** Four sections, one screen: `running`, `queued`, `completed`,
+  `failed`. Cheap enough to run in a loop, because it is still **one SSH round trip** — the
+  probe script gains an `sacct` call alongside its `squeue` call and returns both.
+- **History does not break the design's core rule.** "The cluster is the only source of
+  truth" still holds, because the history is *also* on the cluster: `sacct` retains
+  terminal job states, and the run root — `launch.json` plus the terminal `status.json` the
+  `SessionEnd` hook wrote — persists after the job is gone. `status` reads those; the
+  laptop still stores nothing it cannot rebuild, and two sessions still agree.
+- **`poe flush` is how the list stays readable.** It prunes *run roots*, not a local
+  dismissed-list — a local list would be exactly the unrebuildable laptop state this design
+  refuses. Deleting the run root is what makes an entry leave `status`, on every machine at
+  once.
+- **Flush is deliberately timid, because a failed run's log is evidence.** Default is
+  `--older-than 7d` and completed runs **only**: a success's evidence already lives in its
+  committed notebook and its PR, so the run root is redundant. **Failures are kept unless
+  you ask for them** with `--failed`, because `agent.err` is the only record of why an
+  agent died and the spec requires that "why did my job die" always be answerable. A live
+  session is never touched, and neither is anything inside a staged repo.
+
 ### Who tells the human, and when
 
 The review asked for agents to announce their own completion so the manager only speaks
@@ -360,6 +386,19 @@ The default answer is *don't build it*. What follows is what survived.
   - *Smallest form:* ~40 lines. Driven by the `SessionEnd` hook off the recorded status
     block, so an agent that forgets to announce itself still announces itself; callable by
     the agent mid-run for `needs_human`.
+- **`history` and `flush` — the terminal half of `poe status`**
+  - *Needs to exist:* yes. `squeue` cannot answer "what completed" or "what failed"; a
+    finished job leaves it within minutes, and those are half the question.
+  - *Already solved:* mostly. `sacct` is SLURM's own accounting store and the run roots are
+    already written for supervision — so history is a *read* of two things that exist, not
+    a store we build. No database, no local index.
+  - *Smallest form:* `history()` folds the probe's `sacct` rows together with the terminal
+    `status.json` in each run root (~40 lines); `status_report()` groups the merged rows
+    into four sections (~30, pure, so it is testable on a fixture); `flush()` deletes
+    selected run roots (~30).
+  - *Why `flush` deletes run roots rather than marking them read:* a local "dismissed" list
+    would be laptop state that cannot be rebuilt, which is the one thing this design
+    refuses. Deleting the source makes the entry leave `status` everywhere at once.
 - **`monitor` — the change-gated usage digest**
   - *Needs to exist:* yes, the spec's own motivating story ("\$86 nobody noticed").
   - *Already solved:* `smtplib`/`email.message` for sending, `crontab -l | ... | crontab -`
@@ -528,9 +567,12 @@ def probe(run: Runner, run_root: str) -> dict:
     """ONE round trip: the whole cluster-side world as one JSON object.
 
     Pipes assets/probe.sh to `sh -s` on the login node. The script emits
-    {"now":…, "jobs":[…squeue rows…], "runs":[{launch…, "status":{…}, "nb_mtime":…,
-    "nb_bytes":…, "gpu_util":…}]}. Everything the supervision loop needs, one read,
-    independent of how many agents are in flight.
+    {"now":…, "jobs":[…squeue rows…], "finished":[…sacct rows…],
+    "runs":[{launch…, "status":{…}, "nb_mtime":…, "nb_bytes":…, "gpu_util":…}]}.
+    Everything the supervision loop AND `poe status` need, one read, independent of how many
+    agents are in flight. `sacct` is what makes "what completed / what failed" answerable
+    after a job has left the queue, and folding it in here is what keeps `poe status` cheap
+    enough to poll.
     """
     # cmd = f"sh -s {shlex.quote(run_root)}"
     # feed assets/probe.sh on stdin; parse stdout as JSON
@@ -913,6 +955,62 @@ def kill(session_id: str, run: Runner, cluster: ClusterConfig, *, reason: str) -
     raise NotImplementedError
 
 
+class HistoryRow(BaseModel):
+    """One finished run, reconstructed after its job left the queue."""
+    model_config = ConfigDict(extra="forbid")
+    session_id: str
+    task: str
+    mode: Literal["interactive", "batch"]
+    job_id: str
+    job_state: str                 # COMPLETED / FAILED / TIMEOUT / CANCELLED, from sacct
+    state: str                     # the agent's own terminal state, from status.json
+    ended_at: float | None
+    elapsed_s: int | None
+    gpu_usd: float
+    agent_usd: float | None        # known here, because the run has exited
+    killed_by_rule: str | None
+
+
+def history(snapshot: dict, cluster: ClusterConfig) -> list[HistoryRow]:
+    """Every run that has finished. Pure: folds the probe's sacct rows into the run roots.
+
+    The half of `poe status` that squeue cannot answer. Both sources are on the CLUSTER --
+    sacct's accounting store and the run roots the SessionEnd hook wrote -- so history costs
+    no laptop state and two sessions still agree.
+    """
+    # for each run root with a TERMINAL status.json: join it to its sacct row by job_id
+    # a run root whose job sacct no longer knows -> job_state="UNKNOWN", still listed
+    # an sacct row with no run root (flushed) -> skipped; flushing means forgetting
+    raise NotImplementedError
+
+
+def status_report(views: list[AgentView], history: list[HistoryRow],
+                  jobs: list[Job]) -> str:
+    """The four sections of `poe status`: running, queued, completed, failed. Pure.
+
+    The between-sessions poll: one screen, one round trip. Grouping is by observed state,
+    not by what the agent claims -- a run whose agent says `finished` but whose job says
+    FAILED is listed under failed, because the job is the harder fact.
+    """
+    raise NotImplementedError
+
+
+def flush(run: Runner, cluster: ClusterConfig, *, older_than: str = "7d",
+          failed: bool = False, session_id: str | None = None,
+          dry_run: bool = False) -> list[str]:
+    """Delete finished run roots so they leave `status`. Returns what was removed.
+
+    Timid on purpose. Completed runs only unless --failed: a success's evidence is already
+    in its committed notebook and its PR, but `agent.err` is the ONLY record of why a failed
+    agent died, and the spec requires that question stay answerable. Never touches a live
+    session, and never anything inside a staged repo -- only ~/.slurm-agent/runs/<id>/.
+    """
+    # refuse any session whose status.json is non-terminal OR whose job is live in squeue
+    # select terminal roots older than `older_than`; without --failed, state=="finished" only
+    # dry_run -> return the list without deleting
+    raise NotImplementedError
+
+
 def watch_errors():
     """Error cases for watch."""
     # status block is unreadable/half-written -> state="unknown", status_age_s from mtime.
@@ -1208,6 +1306,11 @@ def agent_run_cmd(task: str, job: str, agent: str, exp_id: str | None = None) ->
 @app.command(name="agent-batch")
 def agent_batch_cmd(task: str, agent: str, time: str | None = None,
                     exp_id: str | None = None) -> None: ...
+@app.command
+def status(older_than: str = "14d") -> None: ...   # running / queued / completed / failed
+@app.command
+def flush(older_than: str = "7d", failed: bool = False, session: str | None = None,
+          dry_run: bool = False) -> None: ...
 @app.command(name="agent-status")
 def agent_status_cmd() -> None: ...
 @app.command(name="agent-logs")
@@ -1336,7 +1439,8 @@ with `if test():` blocks beside each function, per the Code Guide.
 - `staging.py` — `stage`, `missing_env`, `DirtyWorkdirError`.
 - `launch.py` — `claude_argv`, `launch_prompt`, `prepare_run`, `launch`, `launch_batch`,
   `continue_run`, `MissingEnvError`, `LeaseExhausted`, `ContentionError`.
-- `watch.py` — `AgentView`, `Decision`, `views`, `decide`, `act`, `watch`, `kill`.
+- `watch.py` — `AgentView`, `Decision`, `views`, `decide`, `act`, `watch`, `kill`,
+  `HistoryRow`, `history`, `status_report`, `flush`.
 - `monitor.py` — `usage`, `digest`, `monitor_run`, `cron_write`, `cron_status`.
 - `notify.py` — `NotifyConfig`, `send_email`, `send_slack`, `notify`, `scrub`,
   `notify_test`, `NotifyError`.
@@ -1516,6 +1620,27 @@ which case it lives in `tests/`. Every error case in §1 has a bullet here.
 - `watch` — error: `probe` raising `RemoteError` skips the cycle and the loop survives
   (asserted with `once=False` and a runner that fails then succeeds).
 
+**`watch.py` — history, status and flush**
+
+- `history` — happy: a terminal run root joins its `sacct` row into one `HistoryRow` with
+  both the job state and the agent's own state.
+- `history` — boundary: a run root whose job `sacct` no longer knows is still listed, with
+  `job_state="UNKNOWN"` — a forgotten job is not a forgotten run.
+- `history` — boundary: an `sacct` row with no run root is skipped; flushing means
+  forgetting, and history must not resurrect what flush removed.
+- `status_report` — happy: four sections, each row in exactly one of them.
+- `status_report` — **boundary, the disagreement case:** a run whose agent says `finished`
+  but whose job says `FAILED` is listed under **failed**. The job is the harder fact, and
+  reporting it as a success is the one wrong answer here.
+- `flush` — happy: a completed run root older than the window is deleted and returned.
+- `flush` — **error: a live session is never deleted**, whether its `status.json` is
+  non-terminal or its job is still in `squeue` — asserted from both directions separately,
+  because either check alone would let one class of live run through.
+- `flush` — boundary: without `--failed`, failed roots survive; with it, they go.
+- `flush` — boundary: `--dry-run` returns the list and the fake runner sees no `rm`.
+- `flush` — **boundary: no path outside `cluster.run_root` is ever passed to `rm`** — the
+  guard against a malformed session id reaching a delete.
+
 **`monitor.py`**
 
 - `usage` — happy: `fixtures/hyakusage.txt` parses to the expected account totals.
@@ -1587,7 +1712,7 @@ their captured output committed as the fixtures the tests above read.
 
 ## 5. Estimated scope
 
-Roughly **36 files, ~2,150 lines added, 0 modified** — a greenfield repo, so nearly all of
+Roughly **36 files, ~2,270 lines added, 0 modified** — a greenfield repo, so nearly all of
 it is new; ~40% of the Python is `if test():` blocks and their fixtures. The review's batch
 mode and hooks added ~200 lines net, which is small because both reuse the interactive
 path wholesale: batch changes only how the job is submitted, and the hooks are JSON.
@@ -1603,7 +1728,7 @@ path wholesale: batch changes only how the job is submitted, and the hooks are J
 - `slurm_agent/jobs.py` — ~190
 - `slurm_agent/staging.py` — ~110
 - `slurm_agent/launch.py` — ~300 (`prepare_run` + `launch` + `launch_batch`)
-- `slurm_agent/watch.py` — ~290
+- `slurm_agent/watch.py` — ~390 (supervision, plus history / status / flush)
 - `slurm_agent/monitor.py` — ~170
 - `slurm_agent/notify.py` — ~120 (two channels, `scrub`, `notify_test`; no creds reader)
 - `slurm_agent/assets/remote_notify.py` — ~40
@@ -1633,7 +1758,7 @@ reviewable — the first three PRs are useful on their own even if the rest neve
 
 ## 6. Stacking plan
 
-Nine PRs, bottom first. Every layer builds and passes CI with nothing above it merged, and
+Ten PRs, bottom first. Every layer builds and passes CI with nothing above it merged, and
 every layer ships its own tests. Branches are rooted at
 `claude/slurm-agent-orchestration-v8jauv`.
 
@@ -1683,21 +1808,29 @@ every layer ships its own tests. Branches are rooted at
   - *Stands alone because:* it is the whole policy — the pure `decide` plus its threshold
     tests — and it is the layer most worth arguing about line by line.
   - *Depends on:* `…-05-notify` (escalation sends).
-- **`…-07-batch`**
+- **`…-07-status`**
+  - *Lands:* the `sacct` extension to `probe.sh`; `HistoryRow`, `history`, `status_report`,
+    `flush`; `poe status` and `poe flush`.
+  - *Stands alone because:* "tell me what is running, queued, done and failed — and let me
+    tidy the list" is a complete capability a human uses on its own, and it is the only
+    layer that **deletes** anything, which is worth isolating for review rather than
+    burying inside supervision.
+  - *Depends on:* `…-06-supervise` (it reuses `views` and the probe).
+- **`…-08-batch`**
   - *Lands:* `launch_batch`, `prompts/job.sbatch.jinja`, `AgentConfig.mode`, `agent-batch`;
     the `TIMEOUT` and never-renew-a-batch-job branches of `decide`.
   - *Stands alone because:* it is a second submission path over machinery that already
     exists and is already tested, and it is the only way to run anything while the single
     interactive allocation is in use. Reviewing it separately keeps the interactive
     argument in PR-04/05 from being re-opened by sbatch details.
-  - *Depends on:* `…-06-supervise` (it extends `decide`).
-- **`…-08-monitor`**
+  - *Depends on:* `…-07-status` (it adds the `TIMEOUT` rows both `decide` and `status` read).
+- **`…-09-monitor`**
   - *Lands:* `monitor.py`, `config/monitor.yaml`; the four `monitor-*` commands.
   - *Stands alone because:* the usage digest shares only `remote.run` and `notify` with
     everything above it. It is late because it is the least urgent, not the most coupled.
-  - *Depends on:* `…-05-notify` in principle, `…-07-batch` in practice (stacked to keep the
+  - *Depends on:* `…-05-notify` in principle, `…-08-batch` in practice (stacked to keep the
     merge order linear rather than because it needs the code).
-- **`…-09-init-skills-docs`**
+- **`…-10-init-skills-docs`**
   - *Lands:* `preflight.py`, `poe init`, and `poe healthcheck` / `poe hc` with both tiers;
     `.claude/skills/slurm-orchestration.md`; `sessions/_template.py` and `poe session-new`;
     `docs/setup.md` (where a human is told how to fill in `.envrc` on both machines); the
@@ -1705,10 +1838,10 @@ every layer ships its own tests. Branches are rooted at
   - *Stands alone because:* the healthcheck can only check things once they all exist, and the
     skill can only describe a workflow once the workflow runs. This layer is the repo
     becoming self-describing.
-  - *Depends on:* `…-08-monitor`.
+  - *Depends on:* `…-09-monitor`.
 
 A plan, not a contract: an Execute session that finds a better cut may take it and say so in
-the PR body. Folding **08** into **09**, or **03** into **04**, are the two most likely.
+the PR body. Folding **09** into **10**, or **03** into **04**, are the two most likely.
 
 ## Appendix A — assumptions to verify on first contact
 
