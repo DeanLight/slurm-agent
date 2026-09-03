@@ -10,3 +10,16 @@ __pycache__/
 .venv/
 dist/
 .env
+
+# The real secrets. templates/envrc.example is the committed placeholder version.
+.envrc
+
+# Session artifact notebooks are committed WITH their outputs — the evidence is the point.
+!sessions/**/*.ipynb
+
+# The usage ledger is per-machine.
+ledger.jsonl
+
+# A run root should live on the cluster, never inside a checkout — but if one ever does,
+# it must not become a commit.
+.slurm-agent/

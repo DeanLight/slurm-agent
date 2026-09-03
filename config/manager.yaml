@@ -1,0 +1,12 @@
+# The local session's own settings — the mirror of agents/<kind>.yaml.
+#
+# requires_env names the environment KEYS this session needs and never their values.
+# Values live in the gitignored .envrc; `poe healthcheck` reports which are missing.
+requires_env:
+  - SLURM_AGENT_SMTP_HOST
+  - SLURM_AGENT_SMTP_PORT
+  - SLURM_AGENT_SMTP_USER
+  - SLURM_AGENT_SMTP_PASSWORD
+  - SLURM_AGENT_SLACK_WEBHOOK
+
+envrc: .envrc
