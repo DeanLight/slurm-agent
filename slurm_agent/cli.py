@@ -201,14 +201,30 @@ def agent_continue(session: str, job: str | None = None) -> None:
 @app.command
 def status(older_than: str = "14d") -> None:
     """What is running, queued, completed and failed."""
-    _pending("07-status")
+    from slurm_agent import watch as supervisor
+
+    snapshot, rows, cluster, _ = _views()
+    jobs = supervisor._parse_queue(snapshot.get("queue", ""))
+    print(supervisor.status_report(rows, supervisor.history(snapshot, cluster), jobs))
 
 
 @app.command
 def flush(older_than: str = "7d", failed: bool = False, session: str | None = None,
           dry_run: bool = False) -> None:
     """Drop finished runs from `status` by pruning their run roots."""
-    _pending("07-status")
+    from slurm_agent import watch as supervisor
+
+    snapshot, _, cluster, run = _views()
+    removed = supervisor.flush(snapshot, run, cluster, older_than=older_than,
+                               failed=failed, session_id=session, dry_run=dry_run)
+    if not removed:
+        print("nothing to flush")
+        return
+    verb = "would remove" if dry_run else "removed"
+    for path in removed:
+        print(f"{verb} {path}")
+    if not failed:
+        print("failed runs kept — their agent.err is the only record of why they died")
 
 
 # ── notifications and usage ──────────────────────────────────────────────────────
