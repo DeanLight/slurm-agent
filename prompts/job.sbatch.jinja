@@ -1,0 +1,25 @@
+#!/bin/bash
+#SBATCH --job-name=sa-{{ session_short }}
+#SBATCH --gpus={{ gpus }}
+#SBATCH --cpus-per-task={{ cpus }}
+#SBATCH --mem={{ mem }}
+#SBATCH --time={{ time_limit }}
+{%- if qos %}
+#SBATCH --qos={{ qos }}
+{%- endif %}
+{%- if account %}
+#SBATCH --account={{ account }}
+{%- endif %}
+#SBATCH --output={{ run_dir }}/agent.log
+#SBATCH --error={{ run_dir }}/agent.err
+
+# Self-terminating by construction: the claude run below is this script's LAST statement,
+# so the job ends exactly when the agent's process exits. No hook, no reminder, and no
+# trust in the agent to tidy up after itself — which is why batch is the right home for
+# anything running while nobody is watching.
+set -u
+cd {{ workdir }}
+[ -f .envrc ] && . ./.envrc
+export SLURM_AGENT_RUN_DIR={{ run_dir }}
+
+exec {{ claude_command }}
