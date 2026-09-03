@@ -15,7 +15,7 @@ dist/
 .envrc
 
 # Session artifact notebooks are committed WITH their outputs — the evidence is the point.
-!sessions/**/*.ipynb
+!sessions/*/session.ipynb
 
 # The usage ledger is per-machine.
 ledger.jsonl
