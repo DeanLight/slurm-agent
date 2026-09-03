@@ -13,6 +13,12 @@ FMT='Name:|,JobID:|,NodeList:|,StateCompact:|,TimeLeft:|,TimeUsed:|,tres-alloc:|
 
 printf '{"now": %s, "queue": "' "$(date +%s)"
 squeue --me --noheader --Format="$FMT" 2>/dev/null | sed 's/"/\\"/g; s/$/\\n/' | tr -d '\n'
+printf '", "finished": "'
+# sacct is the half squeue cannot answer: a finished job leaves the queue within minutes,
+# so "what completed" and "what failed" live in SLURM's accounting store instead.
+sacct --user="$USER" --starttime=now-14days --noheader --parsable2 --allocations \
+      --format=JobID,JobName,State,End,ElapsedRaw,AllocTRES 2>/dev/null \
+      | sed 's/"/\\"/g; s/$/\\n/' | tr -d '\n'
 printf '", "runs": ['
 
 first=1
