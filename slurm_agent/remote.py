@@ -154,3 +154,48 @@ if test():
     assert quote("~/work/repo") == "'~/work/repo'"
     assert quote("$(rm -rf /)") == "'$(rm -rf /)'"
     display([quote(v) for v in ("plain", "a b", "~/work/repo", "$(rm -rf /)")])
+
+
+# %% [markdown]
+# ## The poll
+#
+# One round trip returns the whole cluster-side world. A poll that costs one round trip is
+# a poll you can afford to run all day; one that costs 1 + N over a 2FA'd link is not.
+
+# %%
+def probe(run: Runner, run_root: str) -> dict:
+    """ONE round trip: the queue, every run root, and each notebook's observed state.
+
+    Pipes `assets/probe.sh` to `sh -s` on the login node. Nothing is installed there — the
+    script is the whole mechanism.
+    """
+    import json
+    from importlib.resources import files
+
+    script = (files("slurm_agent") / "assets" / "probe.sh").read_text()
+    raw = run(f"sh -s {remote_path(run_root)}", script)
+    start = raw.find("{")
+    if start < 0:
+        raise RemoteError("probe", f"no JSON in output: {raw[:500]!r}")
+    try:
+        return json.loads(raw[start:])
+    except ValueError as exc:
+        # A login-node MOTD prepended to the JSON is the likely cause, so show the prefix.
+        raise RemoteError("probe", f"{exc}; output began {raw[:500]!r}") from None
+
+
+# %%
+if test():
+    from tests.conftest import FakeRunner
+
+    blob = '{"now": 100, "queue": "", "runs": []}'
+    assert probe(FakeRunner({"sh -s": blob}), "~/.slurm-agent/runs")["now"] == 100
+    # A MOTD before the JSON is tolerated, because login nodes print one.
+    assert probe(FakeRunner({"sh -s": "Welcome to Tillicum\n" + blob}), "~/r")["now"] == 100
+
+    try:
+        probe(FakeRunner({"sh -s": "Permission denied (publickey)."}), "~/r")
+        raise AssertionError("unparseable output should have raised")
+    except RemoteError as exc:
+        assert "publickey" in str(exc)
+        display(str(exc))
