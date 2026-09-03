@@ -4,8 +4,7 @@ Each command is a thin call into the modules that do the work, so `poe --help` a
 `slurm-agent --help` are the same inventory and an agent driving this repo works through
 the same surface a human does.
 
-Commands land layer by layer; the ones not yet implemented raise `NotImplementedError`
-naming the stack layer that brings them, so the inventory is complete from the start.
+`poe --help` and `slurm-agent --help` are the same inventory, kept in step by a test.
 """
 
 import os
@@ -23,10 +22,6 @@ from slurm_agent.config import (
 )
 
 app = cyclopts.App(name="slurm-agent", help="Drive Tillicum jobs and remote Claude agents.")
-
-
-def _pending(layer: str) -> None:
-    raise NotImplementedError(f"lands in stack layer {layer}")
 
 
 def _cluster() -> ClusterConfig:
@@ -51,6 +46,30 @@ def _notifier():
     return lambda subject, body: notify(subject, body, cfg, keys)
 
 
+def _manager() -> ManagerConfig:
+    return load("config/manager.yaml", ManagerConfig)
+
+
+def _agents() -> list[AgentConfig]:
+    from pathlib import Path
+
+    return [load(p, AgentConfig) for p in sorted(Path("agents").glob("*.yaml"))]
+
+
+def _notify_test():
+    from slurm_agent import notify as notifier
+
+    cfg = load("config/notify.yaml", notifier.NotifyConfig)
+    return notifier.notify_test(cfg, declared_env_keys(_manager(), _agents()), run=_runner())
+
+
+def _report(checks) -> None:
+    from slurm_agent import preflight
+
+    print(preflight.render(checks))
+    raise SystemExit(1 if any(c.ok is False for c in checks) else 0)
+
+
 def _agent(kind: str) -> AgentConfig:
     return load(f"agents/{kind}.yaml", AgentConfig)
 
@@ -68,13 +87,25 @@ def _views():
 @app.command
 def init(send: bool = True) -> None:
     """Create the local footprint, then run a full healthcheck."""
-    _pending("10-init-skills-docs")
+    from slurm_agent import preflight
+
+    cluster, manager, agents = _cluster(), _manager(), _agents()
+    run = _runner()
+    for check in preflight.init(cluster, manager, agents, run):
+        print(f"{check.name:<24} {check.detail}")
+    print()
+    _report(preflight.healthcheck(cluster, manager, agents, run, full=True, send=send,
+                                  notify_test=_notify_test if send else None))
 
 
 @app.command
 def healthcheck(full: bool = False, send: bool = False) -> None:
     """Is everything wired and working? Fast by default; `--full` adds the slow proofs."""
-    _pending("10-init-skills-docs")
+    from slurm_agent import preflight
+
+    _report(preflight.healthcheck(_cluster(), _manager(), _agents(), _runner(),
+                                  full=full, send=send,
+                                  notify_test=_notify_test if send else None))
 
 
 # ── allocations ──────────────────────────────────────────────────────────────────
@@ -312,7 +343,17 @@ def monitor_uninstall() -> None:
 @app.command(name="session-new")
 def session_new(name: str) -> None:
     """Scaffold a session artifact notebook from the template."""
-    _pending("10-init-skills-docs")
+    import datetime
+    from pathlib import Path
+
+    slug = f"{datetime.date.today():%Y-%m-%d}-{name}"
+    target = Path("sessions") / slug / "session.py"
+    if target.exists():
+        raise SystemExit(f"{target} already exists")
+    target.parent.mkdir(parents=True, exist_ok=True)
+    template = Path("sessions/_template.py").read_text()
+    target.write_text(template.replace("{{SESSION}}", slug))
+    print(f"created {target} — `poe nb` to open it")
 
 
 def main() -> None:
