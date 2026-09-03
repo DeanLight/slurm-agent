@@ -447,3 +447,324 @@ if test():
             raise RemoteError("probe", "connection reset")
 
     assert watch(_Flaky(), ClusterConfig(login_host="h"), rules, once=True) == []
+
+
+# %% [markdown]
+# ## History, status and flush
+#
+# `agent-status` answers "what is live". Neither it nor `squeue` can answer **what
+# completed** or **what failed**, because a finished job leaves the queue within minutes.
+#
+# That history is still on the *cluster*, not the laptop: `sacct` retains terminal job
+# states, and the run root persists after the job is gone, carrying `launch.json` and the
+# terminal `status.json` the `SessionEnd` hook wrote. So `status` needs no local database,
+# and two sessions still agree.
+
+# %%
+class HistoryRow(BaseModel):
+    """One finished run, reconstructed after its job left the queue."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    session_id: str
+    task: str
+    mode: str = "interactive"
+    job_id: str
+    job_state: str
+    state: str
+    ended_at: int | None = None
+    elapsed_s: int | None = None
+    gpu_usd: float = 0.0
+    announced: bool = False
+    run_dir: str = ""
+
+
+def _parse_sacct(raw: str) -> dict[str, dict]:
+    """`JobID|JobName|State|End|ElapsedRaw|AllocTRES`, one row per allocation."""
+    from slurm_agent.jobs import _parse_gpus
+
+    rows = {}
+    for line in raw.splitlines():
+        fields = line.split("|")
+        if len(fields) < 6 or not fields[0] or "." in fields[0]:
+            continue                       # steps carry a dot; we want allocations
+        rows[fields[0]] = {
+            "state": fields[2].split()[0] if fields[2] else "UNKNOWN",
+            "end": fields[3], "elapsed": int(fields[4] or 0),
+            "gpus": _parse_gpus(fields[5]),
+        }
+    return rows
+
+
+def history(snapshot: dict, cluster: ClusterConfig) -> list[HistoryRow]:
+    """Every run that has finished. Pure: folds the probe's sacct rows into the run roots.
+
+    A run root whose job sacct no longer knows is still listed — a forgotten job is not a
+    forgotten run. An sacct row with no run root is skipped, because flushing means
+    forgetting and history must not resurrect what flush removed.
+    """
+    finished = _parse_sacct(snapshot.get("finished", ""))
+    live = {j.job_id for j in _parse_queue(snapshot.get("queue", ""))}
+    rows = []
+    for entry in snapshot.get("runs", []):
+        launch, status = entry.get("launch") or {}, entry.get("status") or {}
+        job_id = str(launch.get("job_id", ""))
+        if status.get("state") not in TERMINAL and job_id in live:
+            continue                       # still running: that is `views`' job, not ours
+        record = finished.get(job_id)
+        rows.append(HistoryRow(
+            session_id=launch.get("session_id", "?"), task=launch.get("task", "?"),
+            mode=launch.get("mode", "interactive"), job_id=job_id,
+            job_state=(record or {}).get("state", "UNKNOWN"),
+            state=status.get("state", "unknown"),
+            ended_at=None, elapsed_s=(record or {}).get("elapsed"),
+            gpu_usd=((record or {}).get("gpus", 0) * ((record or {}).get("elapsed", 0) / 3600)
+                     * cluster.gpu_usd_per_hour),
+            announced=bool(status.get("announced_on")), run_dir=entry.get("run_dir", ""),
+        ))
+    return rows
+
+
+def _failed(row: HistoryRow) -> bool:
+    """Did this run fail? The JOB is the harder fact, so it wins over the agent's claim."""
+    return row.job_state not in {"COMPLETED", "UNKNOWN"} or row.state == "failed"
+
+
+# %%
+def status_report(live: list[AgentView], past: list[HistoryRow],
+                  jobs: list[Job]) -> str:
+    """The four sections of `poe status`: running, queued, completed, failed."""
+    lines: list[str] = []
+
+    running = [v for v in live if v.job_state == "RUNNING"]
+    lines.append(f"running ({len(running)})")
+    for v in running:
+        left = f"{(v.time_left_s or 0) // 60}m left" if v.time_left_s else "—"
+        lines.append(f"  {v.session_id[:8]}  {v.task:<10} {v.state:<11} "
+                     f"round {v.round or '—':<5} {left:<9} ${v.gpu_usd:.2f}")
+
+    queued = [j for j in jobs if j.state in {"PD", "CF"}]
+    lines.append(f"queued ({len(queued)})")
+    for j in queued:
+        lines.append(f"  {j.job_id:<8}  {j.name:<10} {j.gpus} gpu  waiting for a node")
+
+    done = [r for r in past if not _failed(r)]
+    lines.append(f"completed ({len(done)})")
+    for r in done:
+        seen = "" if r.announced else "  (never announced)"
+        lines.append(f"  {r.session_id[:8]}  {r.task:<10} {r.job_state:<10} "
+                     f"${r.gpu_usd:.2f}{seen}")
+
+    bad = [r for r in past if _failed(r)]
+    lines.append(f"failed ({len(bad)})")
+    for r in bad:
+        lines.append(f"  {r.session_id[:8]}  {r.task:<10} {r.job_state:<10} "
+                     f"agent said {r.state}  ${r.gpu_usd:.2f}")
+    if bad:
+        lines.append("  logs kept in the run root — `poe flush --failed` drops them")
+    return "\n".join(lines)
+
+
+# %%
+if test():
+    snap = dict(snapshot)
+    snap["finished"] = (
+        "61000|sa-old|COMPLETED|2026-09-01T04:00:00|7200|cpu=8,gres/gpu=4\n"
+        "60999|sa-dead|FAILED|2026-09-01T02:00:00|600|cpu=8,gres/gpu=2\n"
+        "60998.batch|step|COMPLETED|x|10|cpu=8\n"          # a STEP, must be ignored
+    )
+    cluster = ClusterConfig(login_host="h")
+    past = {r.session_id: r for r in history(snap, cluster)}
+
+    # 4f2c and 7b19 are still in the queue, so they are `views`' business, not history's.
+    assert set(past) == {"9c03"}
+    assert past["9c03"].job_state == "COMPLETED"
+    assert round(past["9c03"].gpu_usd, 2) == 7.20      # 4 gpu x 2h x $0.90
+    display([r.model_dump() for r in past.values()])
+
+
+# %%
+if test():
+    # A run root whose job sacct no longer knows is STILL listed — a forgotten job is not
+    # a forgotten run.
+    orphan = {"now": 100, "queue": "", "finished": "", "runs": [
+        {"run_dir": "/r/z", "nb_mtime": 0, "nb_bytes": 0, "status_mtime": 1,
+         "launch": {"session_id": "z", "task": "T", "job_id": "999"},
+         "status": {"state": "finished"}}]}
+    rows = history(orphan, ClusterConfig(login_host="h"))
+    assert len(rows) == 1 and rows[0].job_state == "UNKNOWN"
+
+    # An sacct row with NO run root is skipped: flushing means forgetting, and history
+    # must not resurrect what flush removed.
+    ghost = {"now": 100, "queue": "", "runs": [],
+             "finished": "50000|gone|COMPLETED|x|100|gres/gpu=1\n"}
+    assert history(ghost, ClusterConfig(login_host="h")) == []
+
+
+# %%
+if test():
+    # The disagreement case: the agent says finished, the JOB says FAILED. The job is the
+    # harder fact, so this lists under failed — reporting it as a success is the one
+    # wrong answer here.
+    conflict = {"now": 100, "queue": "",
+                "finished": "77|x|FAILED|x|60|gres/gpu=1\n",
+                "runs": [{"run_dir": "/r/c", "nb_mtime": 0, "nb_bytes": 0,
+                          "status_mtime": 1,
+                          "launch": {"session_id": "c0nflict", "task": "T", "job_id": "77"},
+                          "status": {"state": "finished", "announced_on": ["email"]}}]}
+    rows = history(conflict, ClusterConfig(login_host="h"))
+    assert _failed(rows[0])
+    report = status_report([], rows, [])
+    assert "failed (1)" in report and "completed (0)" in report
+    display(report)
+
+
+# %% [markdown]
+# ## Flush
+#
+# Deleting a run root is what makes an entry leave `status` — on every machine at once. A
+# local "dismissed" list would be laptop state that cannot be rebuilt, which is the one
+# thing this design refuses.
+#
+# It is deliberately timid. A success's evidence already lives in its committed notebook
+# and its PR, so its run root is redundant. **`agent.err` is the only record of why a
+# failed agent died**, and the spec requires that question stay answerable — so failures
+# survive unless you ask for them.
+
+# %%
+def flush(snapshot: dict, run: Runner, cluster: ClusterConfig, *, older_than: str = "7d",
+          failed: bool = False, session_id: str | None = None,
+          dry_run: bool = False) -> list[str]:
+    """Delete finished run roots so they leave `status`. Returns what was removed."""
+    now = snapshot.get("now", time.time())
+    cutoff = duration_seconds(older_than)
+    live_jobs = {j.job_id for j in _parse_queue(snapshot.get("queue", ""))}
+    root = cluster.run_root.rstrip("/")
+
+    doomed: list[str] = []
+    for row, entry in zip(history(snapshot, cluster), _terminal_entries(snapshot, live_jobs)):
+        if session_id and not row.session_id.startswith(session_id):
+            continue
+        # A job vanishing from the queue is NOT proof the agent finished — it may have been
+        # killed mid-write, which is exactly when agent.err matters most. Only a terminal
+        # status block, written by the SessionEnd hook, licenses a delete.
+        if row.state not in TERMINAL:
+            continue
+        if row.job_id in live_jobs:
+            continue
+        if _failed(row) and not failed:
+            continue
+        age = now - int(entry.get("status_mtime") or 0)
+        if not session_id and age < cutoff:
+            continue
+        doomed.append(row.run_dir)
+
+    if not dry_run:
+        for path in doomed:
+            # Never let a malformed session id reach `rm`: the path must be a direct child
+            # of the configured run root, and nothing else is ever deleted.
+            if not _under_run_root(path, root):
+                log.error("flush.refused", path=path, run_root=root)
+                continue
+            run(f"rm -rf {remote_path(path)}")
+            log.info("flush.removed", path=path)
+    return doomed
+
+
+def _terminal_entries(snapshot: dict, live_jobs: set[str]) -> list[dict]:
+    """The probe entries `history` produced rows for, in the same order."""
+    out = []
+    for entry in snapshot.get("runs", []):
+        launch, status = entry.get("launch") or {}, entry.get("status") or {}
+        if status.get("state") not in TERMINAL and str(launch.get("job_id", "")) in live_jobs:
+            continue
+        out.append(entry)
+    return out
+
+
+def _under_run_root(path: str, root: str) -> bool:
+    """Is `path` a direct child of the run root, with no traversal?"""
+    if ".." in path or not path.startswith(f"{root}/"):
+        return False
+    return "/" not in path[len(root) + 1:].strip("/")
+
+
+# %%
+if test():
+    old_snap = {
+        "now": 1_000_000, "queue": "", "finished": "77|x|COMPLETED|x|60|gres/gpu=1\n",
+        "runs": [
+            {"run_dir": "/home/d/.slurm-agent/runs/done1", "nb_mtime": 0, "nb_bytes": 0,
+             "status_mtime": 100, "launch": {"session_id": "done1", "task": "A", "job_id": "77"},
+             "status": {"state": "finished"}},
+            {"run_dir": "/home/d/.slurm-agent/runs/bad1", "nb_mtime": 0, "nb_bytes": 0,
+             "status_mtime": 100, "launch": {"session_id": "bad1", "task": "B", "job_id": "78"},
+             "status": {"state": "failed"}},
+        ],
+    }
+    cluster = ClusterConfig(login_host="h", run_root="/home/d/.slurm-agent/runs")
+
+    runner = FakeRunner()
+    removed = flush(old_snap, runner, cluster)
+    assert removed == ["/home/d/.slurm-agent/runs/done1"]     # the failure survives
+    assert runner.asked("rm -rf /home/d/.slurm-agent/runs/done1")
+    assert not runner.asked("bad1")
+    display(removed)
+
+    with_failed = FakeRunner()
+    assert len(flush(old_snap, with_failed, cluster, failed=True)) == 2
+
+
+# %%
+if test():
+    # --dry-run returns the list and deletes nothing.
+    dry = FakeRunner()
+    assert flush(old_snap, dry, cluster, dry_run=True) == ["/home/d/.slurm-agent/runs/done1"]
+    assert dry.commands == []
+
+    # Too recent to flush.
+    assert flush(old_snap, FakeRunner(), cluster, older_than="30d") == []
+
+
+# %%
+if test():
+    # A LIVE run is never deleted, from either direction: a non-terminal status block, or
+    # a job still in the queue. Either check alone would let one class through.
+    live_snap = {
+        "now": 1_000_000,
+        "queue": "dev|79|g004|R|01:00:00|00:10:00|gres/gpu=1|\n", "finished": "",
+        "runs": [{"run_dir": "/home/d/.slurm-agent/runs/live1", "nb_mtime": 0,
+                  "nb_bytes": 0, "status_mtime": 100,
+                  "launch": {"session_id": "live1", "task": "C", "job_id": "79"},
+                  "status": {"state": "running"}}],
+    }
+    guard = FakeRunner()
+    assert flush(live_snap, guard, cluster) == []
+    assert guard.commands == []
+
+    # And a run whose job is gone but whose status block is still non-terminal.
+    stalled = {"now": 1_000_000, "queue": "", "finished": "",
+               "runs": [{"run_dir": "/home/d/.slurm-agent/runs/x", "nb_mtime": 0,
+                         "nb_bytes": 0, "status_mtime": 100,
+                         "launch": {"session_id": "x", "task": "D", "job_id": "80"},
+                         "status": {"state": "running"}}]}
+    assert flush(stalled, FakeRunner(), cluster) == []
+
+
+# %%
+if test():
+    # No path outside the run root ever reaches `rm`, whatever a run record claims.
+    assert _under_run_root("/home/d/.slurm-agent/runs/abc", "/home/d/.slurm-agent/runs")
+    assert not _under_run_root("/home/d/.slurm-agent/runs/../../etc", "/home/d/.slurm-agent/runs")
+    assert not _under_run_root("/etc/passwd", "/home/d/.slurm-agent/runs")
+    assert not _under_run_root("/home/d/.slurm-agent/runs/a/b", "/home/d/.slurm-agent/runs")
+
+    hostile = {"now": 1_000_000, "queue": "", "finished": "",
+               "runs": [{"run_dir": "/etc", "nb_mtime": 0, "nb_bytes": 0,
+                         "status_mtime": 100,
+                         "launch": {"session_id": "evil", "task": "E", "job_id": "0"},
+                         "status": {"state": "finished"}}]}
+    blocked = FakeRunner()
+    flush(hostile, blocked, cluster)
+    assert not blocked.asked("rm")
+    display("refused to rm a path outside the run root")
