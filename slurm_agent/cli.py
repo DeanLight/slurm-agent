@@ -8,13 +8,27 @@ Commands land layer by layer; the ones not yet implemented raise `NotImplemented
 naming the stack layer that brings them, so the inventory is complete from the start.
 """
 
+import os
+
 import cyclopts
+
+from slurm_agent.config import ClusterConfig, load
 
 app = cyclopts.App(name="slurm-agent", help="Drive Tillicum jobs and remote Claude agents.")
 
 
 def _pending(layer: str) -> None:
     raise NotImplementedError(f"lands in stack layer {layer}")
+
+
+def _cluster() -> ClusterConfig:
+    return load("config/cluster.yaml", ClusterConfig)
+
+
+def _runner():
+    from slurm_agent.remote import ssh_runner
+
+    return ssh_runner(_cluster().login_host)
 
 
 # ── setup ────────────────────────────────────────────────────────────────────────
@@ -35,25 +49,48 @@ def healthcheck(full: bool = False, send: bool = False) -> None:
 def job_up(name: str, gpus: int = 1, time: str = "04:00:00", qos: str | None = None,
            cpus: int = 8, mem: str = "200G") -> None:
     """Bring up an allocation, or return the one already running under that name."""
-    _pending("02-jobs")
+    from slurm_agent import jobs
+
+    cluster = _cluster()
+    job = jobs.job_up(name, _runner(), cluster, gpus=gpus, time_limit=time, qos=qos,
+                      cpus=cpus, mem=mem)
+    left = job.time_left_s and f"{job.time_left_s // 3600}:{job.time_left_s % 3600 // 60:02d} left"
+    print(f"job {job.job_id} on {job.node or 'pending'} · {job.state} · {left or '—'} "
+          f"· {job.gpus} gpu · est. ${job.gpu_usd(cluster):.2f} so far")
 
 
 @app.command(name="job-status")
 def job_status() -> None:
     """Every allocation of mine, one line each."""
-    _pending("02-jobs")
+    from slurm_agent import jobs
+
+    cluster = _cluster()
+    rows = jobs.job_list(_runner())
+    if not rows:
+        print("no allocations")
+        return
+    for job in rows:
+        left = f"{job.time_left_s // 60} min left" if job.time_left_s else "—"
+        kind = "batch" if job.batch else "interactive"
+        print(f"{job.name:<14} {job.job_id:<8} {job.node or '-':<6} {job.state:<3} "
+              f"{left:<14} {job.gpus} gpu  ${job.gpu_usd(cluster):.2f}  {kind}")
 
 
 @app.command(name="job-shell")
 def job_shell(name: str) -> None:
     """Open an interactive shell on the allocation's compute node."""
-    _pending("02-jobs")
+    from slurm_agent import jobs
+
+    argv = jobs.job_shell_command(name, _runner(), _cluster())
+    os.execvp(argv[0], argv)          # become the shell rather than wrapping it
 
 
 @app.command(name="job-down")
 def job_down(name: str) -> None:
     """Cancel the allocation."""
-    _pending("02-jobs")
+    from slurm_agent import jobs
+
+    print(f"cancelled job {jobs.job_down(name, _runner())} ({name})")
 
 
 # ── remote agents ────────────────────────────────────────────────────────────────
