@@ -12,7 +12,7 @@ import os
 
 import cyclopts
 
-from slurm_agent.config import ClusterConfig, load
+from slurm_agent.config import AgentConfig, ClusterConfig, load
 
 app = cyclopts.App(name="slurm-agent", help="Drive Tillicum jobs and remote Claude agents.")
 
@@ -29,6 +29,10 @@ def _runner():
     from slurm_agent.remote import ssh_runner
 
     return ssh_runner(_cluster().login_host)
+
+
+def _agent(kind: str) -> AgentConfig:
+    return load(f"agents/{kind}.yaml", AgentConfig)
 
 
 # ── setup ────────────────────────────────────────────────────────────────────────
@@ -97,7 +101,12 @@ def job_down(name: str) -> None:
 @app.command(name="agent-run")
 def agent_run(task: str, job: str, agent: str, exp_id: str | None = None) -> None:
     """Stage a repo and launch a Claude agent on an allocation."""
-    _pending("04-launch")
+    from slurm_agent import launch as launcher
+
+    cfg = _agent(agent)
+    session = launcher.launch(cfg, task, job, _runner(), _cluster(), exp_id=exp_id)
+    print(f"launched agent {agent!r} for {task} · session {session}")
+    print(f"lease {cfg.lease} · budget ${cfg.max_budget_usd} · up to {cfg.max_leases} leases")
 
 
 @app.command(name="agent-batch")
@@ -116,7 +125,19 @@ def agent_status() -> None:
 @app.command(name="agent-logs")
 def agent_logs(session: str, cells: bool = False, tail: int = 50) -> None:
     """Read a remote agent's notebook or log without copying it back."""
-    _pending("04-launch")
+    import json
+
+    from slurm_agent.remote import quote, remote_path
+
+    cluster, run = _cluster(), _runner()
+    run_dir = remote_path(f"{cluster.run_root.rstrip('/')}/{session}")
+    if cells:
+        # `juplit cells` runs on the LOGIN NODE over the shared filesystem, so a 4 MB
+        # notebook costs a few hundred tokens and is never copied to the laptop.
+        record = json.loads(run(f"cat {run_dir}/launch.json"))
+        print(run(f"juplit cells {quote(record['notebook'])}"))
+    else:
+        print(run(f"tail -n {int(tail)} {run_dir}/agent.log {run_dir}/agent.err"))
 
 
 @app.command(name="agent-watch")
