@@ -91,7 +91,7 @@ notebook_src_dirs = ["slurm_agent", "docs"]
 # deliverable (experiment notebooks). Their outputs survive nb / sync / clean, and
 # `juplit check` fails if they stop matching the .py that produced them.
 # Remember to un-ignore each one in .gitignore — see the comment there.
-artifact_notebooks = ["sessions/**/*.py"]
+artifact_notebooks = ["sessions/*/session.py"]   # dated sessions; not _template.py
 
 [tool.jupytext]
 formats = "ipynb,py:percent"

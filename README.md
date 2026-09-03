@@ -1,48 +1,65 @@
 # slurm-agent
 
+Drive Tillicum from a local Claude Code session: get an allocation, stage a repo, launch
+Claude agents **on the compute node**, supervise them against named thresholds, and hear
+about it only when a human is actually needed.
+
+Tillicum sits behind UW 2FA on a network only the researcher's laptop is on, so no sandbox,
+cloud session or CI runner can reach it. This repo runs on that laptop, on purpose.
+
 ## Setup
 
+See [docs/setup.md](docs/setup.md). Short version:
+
 ```bash
-uv sync      # install dependencies
-poe init     # install git hooks
-poe nb       # generate .ipynb notebooks from .py source files
-poe skill    # teach Claude Code the juplit workflow (re-run after upgrading juplit)
+uv sync --all-groups && poe hooks && poe init
 ```
 
-## Workflow
+## The one rule
+
+**The cluster is the only source of truth. The laptop holds nothing it cannot rebuild.**
+
+Everything reported here is derived from the SLURM queue plus files on the cluster's shared
+filesystem. So a closed laptop loses nothing, two sessions agree, and supervision is a poll
+loop you can stop and restart at will.
+
+## Commands
 
 | Command | What it does |
 |---|---|
-| `poe nb` | Generate `.ipynb` files from `.py` sources (run after cloning) |
-| `poe sync` | Sync `.py` <-> `.ipynb` after editing |
-| `poe clean` | Sync then delete all `.ipynb` files |
-| `poe test` | Run tests |
-| `poe check` | Fail if a committed notebook's outputs contradict its `.py` |
-| `poe html <nb>` | Render a notebook to standalone HTML |
-| `poe skill` | Install/refresh the juplit skill so Claude Code knows the workflow |
+| `poe init` | Create the local footprint, then prove it works by really sending |
+| `poe healthcheck` / `poe hc` | Verify. Fast by default; `--full` adds the slow proofs |
+| `poe job-up NAME` | Bring up an allocation, or reattach to the live one |
+| `poe job-status` | Every allocation of mine |
+| `poe job-shell NAME` | A shell on the compute node |
+| `poe job-down NAME` | Cancel the allocation |
+| `poe agent-run TASK --job J --agent K` | Stage a repo and launch an agent on an allocation |
+| `poe agent-batch TASK --agent K` | Submit the same agent as a self-terminating batch job |
+| `poe agent-status` | One line per live agent, with what it is waiting on |
+| `poe agent-logs S --cells` | Read a remote notebook in place |
+| `poe agent-watch` | The supervision loop: poll, decide, act, log |
+| `poe agent-kill S --reason R` | Stop one agent, not its neighbours |
+| `poe agent-continue S` | A fresh lease on the same notebook |
+| `poe status` | Running, queued, completed, failed |
+| `poe flush` | Drop finished runs from `status` |
+| `poe notify-test` | Really send, from here and from the cluster |
+| `poe monitor-*` | The change-gated usage digest and its schedule |
+| `poe session-new NAME` | Scaffold a session artifact notebook |
 
-### Editing notebooks
+`poe --help` is the full inventory.
 
-1. Edit `.py` files directly — these are the source of truth.
-2. Run `poe sync` to propagate changes to `.ipynb` notebooks.
-3. Commit only `.py` files (`.ipynb` files are gitignored).
+## How a run is supervised
 
-### Artifact notebooks
+`config/supervision.yaml` says what "stuck" means, so a kill is a rule firing rather than a
+judgement call — and every kill records the threshold that fired. Two progress signals stay
+independent: what the agent *says* about itself, and what the filesystem *observed*. A
+detector for a stuck agent must not depend on the stuck agent's own account.
 
-Most `.ipynb` files here are disposable. A notebook whose *outputs* are the deliverable —
-an experiment run whose plots and tables are what a reviewer reads — is different: declare
-it and both halves are committed and maintained.
+**Rules kill; you renew.** Renewing means reading the notebook first, which no threshold
+can do.
 
-```toml
-[tool.juplit]
-artifact_notebooks = ["experiments/**/*.py"]
-```
+## What it never does
 
-```gitignore
-!experiments/ablation.ipynb   # or the outputs are preserved locally and never committed
-```
-
-`poe check` then fails whenever a committed notebook's outputs no longer match the code
-that produced them — it runs in CI and as a pre-commit hook. `juplit run <nb> --stale`
-re-executes just the cells that drifted. See the
-[artifact notebooks tutorial](https://deanlight.github.io/juplit/artifact_notebooks/).
+Reach Tillicum from anywhere but this laptop. Push anything from the compute node back to
+you. Write secrets for you. Write its own files inside a repo it staged. Let the scheduled
+monitor spend money.
