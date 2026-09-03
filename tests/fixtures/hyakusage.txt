@@ -1,0 +1,6 @@
+Hyak usage for deanlcs
+
+Account          Used (GPU-hrs)   Limit (GPU-hrs)   Used ($)    Limit ($)
+--------------   --------------   ---------------   ---------  ----------
+safedesign               458.11           1000.00     412.30      900.00
+stf                        0.00            250.00       0.00      225.00
