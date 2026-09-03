@@ -176,7 +176,15 @@ def flush(older_than: str = "7d", failed: bool = False, session: str | None = No
 @app.command(name="notify-test")
 def notify_test() -> None:
     """Really send one message per channel, from here and from the cluster."""
-    _pending("05-notify")
+    from slurm_agent import notify as notifier
+    from slurm_agent.config import ManagerConfig, declared_env_keys
+
+    cfg = load("config/notify.yaml", notifier.NotifyConfig)
+    manager = load("config/manager.yaml", ManagerConfig)
+    rows = notifier.notify_test(cfg, declared_env_keys(manager, []), run=_runner())
+    for where, ok, detail in rows:
+        print(f"{where:<9} {'ok' if ok else 'FAILED':<7} {detail}")
+    raise SystemExit(0 if all(ok for _, ok, _ in rows) else 1)
 
 
 @app.command(name="monitor-run")

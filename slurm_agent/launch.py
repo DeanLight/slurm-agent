@@ -168,6 +168,8 @@ def prepare_run(agent: AgentConfig, task: str, run: Runner, cluster: ClusterConf
     assets = files("slurm_agent") / "assets"
     _write_remote(run, f"{quoted_dir}/remote_status.py",
                   (assets / "remote_status.py").read_text())
+    _write_remote(run, f"{quoted_dir}/remote_notify.py",
+                  (assets / "remote_notify.py").read_text())
     _write_remote(run, f"{quoted_dir}/settings.json", render_asset(
         "hook_settings.json.jinja", run_dir=run_dir, notebook=abs_notebook))
     _write_remote(run, f"{quoted_dir}/launch.json", json.dumps({
