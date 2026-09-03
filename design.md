@@ -241,6 +241,12 @@ because the repo already has one:
   `export KEY=v` and bare `KEY=v`, and ignores comments — so no `direnv` dependency), and
   the remote launch already does `bash -lc 'source .envrc; exec …'`. `notify.py` and
   `remote_notify.py` read `os.environ`. **There is no credentials parser in this design.**
+- **Remote paths resolve through `$HOME`, never `~`.** Found while implementing PR-01:
+  `shlex.quote("~/x")` returns `'~/x'`, so a tilde that crosses the ssh boundary reaches the
+  remote shell quoted and never expands. Config files keep `~` for readability
+  (`run_root: ~/.slurm-agent/runs`), which means **every interpolation site must convert
+  first**. Recorded here rather than left as a trap for PR-02, which is where most of them
+  are.
 - `poe healthcheck` **asserts mode `0600`** on each `.envrc` holding declared secrets, and
   fails loudly otherwise. Tillicum is a shared filesystem; a group-readable app-password is
   the actual risk, and it is the kind of thing discovered late or never.
