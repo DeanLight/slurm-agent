@@ -1,0 +1,24 @@
+{
+  "hooks": {
+    "Stop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 {{ run_dir }}/remote_status.py tick --notebook {{ notebook }}"
+          }
+        ]
+      }
+    ],
+    "SessionEnd": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 {{ run_dir }}/remote_status.py finish --notebook {{ notebook }}"
+          }
+        ]
+      }
+    ]
+  }
+}

@@ -21,3 +21,10 @@ SLURM_AGENT_SMTP_PASSWORD=<secret-here>
 # ── slack (optional; drop it from config/manager.yaml if you do not want it) ────
 # An incoming webhook URL: https://api.slack.com/messaging/webhooks
 SLURM_AGENT_SLACK_WEBHOOK=<secret-here>
+
+# ── declared by agents/*.yaml ───────────────────────────────────────────────────
+# These belong in the .envrc of the repo the AGENT runs in, on Tillicum — not on your
+# laptop. They are listed here because this file is the one inventory of every key the
+# repo declares; `poe healthcheck` checks each against the workdir it actually applies to.
+HF_TOKEN=<secret-here>
+OPENAI_BASE_URL=<secret-here>
