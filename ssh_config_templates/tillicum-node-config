@@ -1,0 +1,8 @@
+# `poe job-up` rewrites the Hostname line below to whichever compute node your
+# allocation landed on, so vscode and plain ssh follow the job.
+Host tillicum-node
+    Hostname g000
+    User deanlcs
+    ProxyJump tillicum-login
+    StrictHostKeyChecking no
+    UserKnownHostsFile /dev/null
