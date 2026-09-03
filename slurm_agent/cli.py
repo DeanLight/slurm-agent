@@ -12,7 +12,15 @@ import os
 
 import cyclopts
 
-from slurm_agent.config import AgentConfig, ClusterConfig, SupervisionConfig, load
+from slurm_agent.config import (
+    AgentConfig,
+    ClusterConfig,
+    ManagerConfig,
+    MonitorConfig,
+    SupervisionConfig,
+    declared_env_keys,
+    load,
+)
 
 app = cyclopts.App(name="slurm-agent", help="Drive Tillicum jobs and remote Claude agents.")
 
@@ -29,6 +37,18 @@ def _runner():
     from slurm_agent.remote import ssh_runner
 
     return ssh_runner(_cluster().login_host)
+
+
+LEDGER = "ledger.jsonl"
+
+
+def _notifier():
+    """A `send(subject, body)` bound to the configured channels, or None if unconfigured."""
+    from slurm_agent.notify import NotifyConfig, notify
+
+    cfg = load("config/notify.yaml", NotifyConfig)
+    keys = declared_env_keys(load("config/manager.yaml", ManagerConfig), [])
+    return lambda subject, body: notify(subject, body, cfg, keys)
 
 
 def _agent(kind: str) -> AgentConfig:
@@ -252,25 +272,41 @@ def notify_test() -> None:
 @app.command(name="monitor-run")
 def monitor_run(dry_run: bool = False) -> None:
     """Poll usage and send the digest, but only if spend actually moved."""
-    _pending("09-monitor")
+    from slurm_agent import monitor
+
+    cfg = load("config/monitor.yaml", MonitorConfig)
+    send = None if dry_run else _notifier()
+    print(monitor.monitor_run(_runner(), cfg, LEDGER, dry_run=dry_run, send=send))
 
 
 @app.command(name="monitor-install")
 def monitor_install() -> None:
     """Install the usage-digest schedule on this machine."""
-    _pending("09-monitor")
+    from pathlib import Path
+
+    from slurm_agent import monitor
+
+    cfg = load("config/monitor.yaml", MonitorConfig)
+    line = monitor.cron_line(cfg, Path.cwd())
+    monitor.cron_write(line)
+    print(f"installed: {line}")
 
 
 @app.command(name="monitor-status")
 def monitor_status() -> None:
     """Is the schedule on, when did it last fire, when does it fire next."""
-    _pending("09-monitor")
+    from slurm_agent import monitor
+
+    print(monitor.cron_status(LEDGER))
 
 
 @app.command(name="monitor-uninstall")
 def monitor_uninstall() -> None:
     """Remove the schedule. Idempotent, like the install."""
-    _pending("09-monitor")
+    from slurm_agent import monitor
+
+    monitor.cron_write(None)
+    print("removed: the slurm-agent monitor crontab block")
 
 
 @app.command(name="session-new")
