@@ -119,6 +119,33 @@ def quote(value: str) -> str:
 
 
 # %%
+def remote_path(path: str | object) -> str:
+    """Render a path for interpolation into a remote command, expanding `~` via `$HOME`.
+
+    `quote` alone is wrong for a home-relative path: it quotes the tilde, so the remote
+    shell receives it literally and never expands it. Quoting only the tail keeps `$HOME`
+    expandable while still making the rest injection-safe.
+    """
+    path = str(path)
+    if path == "~":
+        return '"$HOME"'
+    if path.startswith("~/"):
+        return '"$HOME"/' + quote(path[2:])
+    return quote(path)
+
+
+# %%
+if test():
+    assert remote_path("~/.slurm-agent/runs") == '"$HOME"/.slurm-agent/runs'
+    assert remote_path("~") == '"$HOME"'
+    assert remote_path("/scratch/runs") == "/scratch/runs"
+    # The tail is still quoted, so a hostile path cannot break out of the command.
+    assert remote_path("~/a b") == '"$HOME"/\'a b\''
+    assert remote_path("~/$(rm -rf /)") == '"$HOME"/\'$(rm -rf /)\''
+    display([remote_path(p) for p in ("~/.slurm-agent/runs", "~/a b", "/scratch/x")])
+
+
+# %%
 if test():
     assert quote("plain") == "plain"
     assert quote("a b") == "'a b'"

@@ -100,8 +100,13 @@ formats = "ipynb,py:percent"
 slurm-agent = "slurm_agent.cli:main"
 
 [tool.pytest.ini_options]
+# Explicit, because `if test():` blocks run at IMPORT during collection: if a directory is
+# not collected its tests silently do not run, which looks identical to passing.
+testpaths = ["slurm_agent", "tests"]
+# Shipped assets run on the cluster under whatever python is there; never import them here.
+norecursedirs = ["*.egg", ".*", "_darcs", "build", "CVS", "dist", "node_modules", "venv",
+                 "{arch}", "assets"]
 # Shipped assets are copied to the cluster and run there; they are not our test modules.
-norecursedirs = ["slurm_agent/assets", "templates"]
 python_files = ["*.py"]
 python_classes = ["Test*"]
 python_functions = ["test_*"]
