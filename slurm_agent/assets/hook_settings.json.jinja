@@ -1,11 +1,22 @@
 {
   "hooks": {
+    "PostToolUse": [
+      {
+        "matcher": {"tools": ["Bash", "Edit", "Write", "NotebookEdit"]},
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 {{ run_dir }}/remote_status.py remind --log-dir {{ log_dir }}"
+          }
+        ]
+      }
+    ],
     "Stop": [
       {
         "hooks": [
           {
             "type": "command",
-            "command": "python3 {{ run_dir }}/remote_status.py tick --notebook {{ notebook }}"
+            "command": "python3 {{ run_dir }}/remote_status.py tick --log-dir {{ log_dir }}"
           }
         ]
       }
@@ -15,7 +26,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "python3 {{ run_dir }}/remote_status.py finish --notebook {{ notebook }}"
+            "command": "python3 {{ run_dir }}/remote_status.py finish --log-dir {{ log_dir }}"
           }
         ]
       }

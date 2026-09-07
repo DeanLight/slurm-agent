@@ -142,7 +142,11 @@ def agent_logs(session: str, cells: bool = False, tail: int = 50) -> None:
         # `juplit cells` runs on the LOGIN NODE over the shared filesystem, so a 4 MB
         # notebook costs a few hundred tokens and is never copied to the laptop.
         record = json.loads(run(f"cat {run_dir}/launch.json"))
-        print(run(f"juplit cells {quote(record['notebook'])}"))
+        # Which notebook is current is discovered, not declared: read it from the status
+        # block the hooks maintain, and fall back to the log dir when none has run yet.
+        status = json.loads(run(f"cat {run_dir}/status.json 2>/dev/null || echo {{}}") or "{}")
+        target = status.get("notebook") or record["log_dir"]
+        print(run(f"juplit cells {quote(target)}"))
     else:
         print(run(f"tail -n {int(tail)} {run_dir}/agent.log {run_dir}/agent.err"))
 

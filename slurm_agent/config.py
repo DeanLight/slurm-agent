@@ -156,7 +156,10 @@ class AgentConfig(BaseModel):
     repo: str
     ref: str
     workdir: str
-    notebook: str
+    # The experiment LOG DIRECTORY, not one notebook. An analysis grows several over time,
+    # so the agent looks here to decide whether to continue an existing notebook or start a
+    # new one, and the status hook reports whichever it is actually working in.
+    log_dir: str
     requires_env: list[str] = []
     skills: list[str] = []
     mcp: list[str] = []
@@ -177,7 +180,7 @@ if test():
         repo="DeanLight/deepreasoner-baselines",
         ref="claude/exp14",
         workdir="~/work/deepreasoner-baselines",
-        notebook="experiments/{EXP_ID}/run.py",
+        log_dir="experiments/{EXP_ID}",
         requires_env=["HF_TOKEN"],
         max_budget_usd=8,
     )
@@ -185,7 +188,7 @@ if test():
     assert duration_seconds(agent.lease) == 14400
 
     try:
-        AgentConfig(repo="x", ref="y", workdir="z", notebook="n",
+        AgentConfig(repo="x", ref="y", workdir="z", log_dir="d",
                     max_budget_usd=1, buget_usd=5)
         raise AssertionError("extra key should have raised")
     except ValidationError as exc:
@@ -311,9 +314,9 @@ def missing_env(keys: list[str], env: dict[str, str] | None = None) -> list[str]
 
 # %%
 if test():
-    agent_a = AgentConfig(repo="a", ref="r", workdir="w", notebook="n",
+    agent_a = AgentConfig(repo="a", ref="r", workdir="w", log_dir="d",
                           max_budget_usd=1, requires_env=["HF_TOKEN", "SHARED"])
-    agent_b = AgentConfig(repo="b", ref="r", workdir="w", notebook="n",
+    agent_b = AgentConfig(repo="b", ref="r", workdir="w", log_dir="d",
                           max_budget_usd=1, requires_env=["SHARED"])
     manager_cfg = ManagerConfig(requires_env=["SLURM_AGENT_SMTP_PASSWORD"])
 

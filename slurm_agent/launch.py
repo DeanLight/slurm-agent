@@ -84,7 +84,7 @@ def claude_argv(agent: AgentConfig, *, prompt: str, session_id: str, settings_pa
 # %%
 if test():
     agent = AgentConfig(repo="DeanLight/baselines", ref="claude/exp14",
-                        workdir="~/work/baselines", notebook="experiments/{EXP_ID}/run.py",
+                        workdir="~/work/baselines", log_dir="experiments/{EXP_ID}",
                         max_budget_usd=8, mcp=["notion"], requires_env=["HF_TOKEN"],
                         allowed_tools=["Read", "Bash(uv run *)"])
     argv = claude_argv(agent, prompt="go", session_id="4f2c", settings_path="/run/settings.json",
@@ -109,7 +109,7 @@ if test():
     assert inside == ["~/work/baselines"]
 
     # mcp: [] omits BOTH mcp flags rather than one of them.
-    plain = AgentConfig(repo="r", ref="v", workdir="~/w", notebook="n", max_budget_usd=1)
+    plain = AgentConfig(repo="r", ref="v", workdir="~/w", log_dir="d", max_budget_usd=1)
     bare_argv = claude_argv(plain, prompt="go", session_id="s", settings_path="/s.json")
     assert "--mcp-config" not in bare_argv and "--strict-mcp-config" not in bare_argv
 
@@ -136,11 +136,11 @@ def render(template: str, **context: object) -> str:
     return env.get_template(template).render(**context)
 
 
-def launch_prompt(agent: AgentConfig, *, task: str, notebook: str, run_dir: str,
+def launch_prompt(agent: AgentConfig, *, task: str, log_dir: str, run_dir: str,
                   sha: str) -> str:
-    """The launch prompt: the task, the notebook, and the mailbox contract."""
+    """The launch prompt: the task, the log directory, and the mailbox contract."""
     return render("agent_launch.md.jinja", task=task, repo=agent.repo, ref=agent.ref,
-                  sha=sha[:8], workdir=agent.workdir, notebook=notebook,
+                  sha=sha[:8], workdir=agent.workdir, log_dir=log_dir,
                   run_dir=run_dir, lease=agent.lease)
 
 
@@ -162,18 +162,18 @@ def prepare_run(agent: AgentConfig, task: str, run: Runner, cluster: ClusterConf
     quoted_dir = remote_path(run_dir)
     run(f"mkdir -p {quoted_dir}")
 
-    notebook = agent.notebook.replace("{EXP_ID}", exp_id or task.lower())
-    abs_notebook = f"{agent.workdir.rstrip('/')}/{notebook}"
+    log_dir = agent.log_dir.replace("{EXP_ID}", exp_id or task.lower())
+    abs_log_dir = f"{agent.workdir.rstrip('/')}/{log_dir}"
 
     assets = files("slurm_agent") / "assets"
     _write_remote(run, f"{quoted_dir}/remote_status.py",
                   (assets / "remote_status.py").read_text())
     _write_remote(run, f"{quoted_dir}/settings.json", render_asset(
-        "hook_settings.json.jinja", run_dir=run_dir, notebook=abs_notebook))
+        "hook_settings.json.jinja", run_dir=run_dir, log_dir=abs_log_dir))
     _write_remote(run, f"{quoted_dir}/launch.json", json.dumps({
         "session_id": session_id, "task": task, "agent": agent.repo, "mode": agent.mode,
         "repo": agent.repo, "ref": agent.ref, "sha": sha, "workdir": agent.workdir,
-        "notebook": abs_notebook, "lease": agent.lease, "max_leases": agent.max_leases,
+        "log_dir": abs_log_dir, "lease": agent.lease, "max_leases": agent.max_leases,
         "leases_used": 1, "max_budget_usd": agent.max_budget_usd, "run_dir": run_dir,
     }, indent=1, sort_keys=True))
     log.info("launch.prepared", session=session_id, run_dir=run_dir)
@@ -190,12 +190,16 @@ def render_asset(name: str, **context: object) -> str:
 if test():
     from tests.conftest import FakeRunner
 
-    prompt = launch_prompt(agent, task="TASK-104", notebook="experiments/exp14/run.py",
+    prompt = launch_prompt(agent, task="TASK-104", log_dir="experiments/exp14",
                            run_dir="/home/d/.slurm-agent/runs/4f2c", sha="a1b2c3d4e5")
     assert "TASK-104" in prompt
-    assert "experiments/exp14/run.py" in prompt
+    assert "experiments/exp14" in prompt
     assert "remote_status.py" in prompt
     assert "Dev Workspace" in prompt
+    # It must tell the agent to look before it writes: continue an existing notebook, or
+    # start a new one. An analysis grows several, and picking wrong silently forks it.
+    assert "Look in it before you start" in prompt
+    assert "continue it" in prompt
     # It must tell the agent NOT to cancel a shared allocation.
     assert "Do not cancel the allocation" in prompt
     display(prompt[:400])
@@ -204,10 +208,19 @@ if test():
 # %%
 if test():
     settings = json.loads(render_asset("hook_settings.json.jinja",
-                                       run_dir="/run/4f2c", notebook="/w/nb.ipynb"))
-    assert set(settings["hooks"]) == {"Stop", "SessionEnd"}
+                                       run_dir="/run/4f2c", log_dir="/w/experiments/exp14"))
+    assert set(settings["hooks"]) == {"PostToolUse", "Stop", "SessionEnd"}
     stop = settings["hooks"]["Stop"][0]["hooks"][0]["command"]
-    assert "/run/4f2c/remote_status.py tick" in stop and "/w/nb.ipynb" in stop
+    assert "/run/4f2c/remote_status.py tick" in stop
+    # The hooks are pointed at the log DIRECTORY; which notebook is current is discovered,
+    # never baked in at launch, because the agent may start another one.
+    assert "--log-dir /w/experiments/exp14" in stop
+    assert "/w/nb.ipynb" not in json.dumps(settings)
+
+    # The reminder is a hook, not a line in the prompt, so it lands when it matters.
+    remind = settings["hooks"]["PostToolUse"][0]
+    assert remind["matcher"]["tools"] == ["Bash", "Edit", "Write", "NotebookEdit"]
+    assert "remote_status.py remind" in remind["hooks"][0]["command"]
     display(settings)
 
 
@@ -248,8 +261,8 @@ def launch(agent: AgentConfig, task: str, job_name: str, run: Runner,
         )
 
     session_id, run_dir, sha = prepare_run(agent, task, run, cluster, exp_id)
-    notebook = agent.notebook.replace("{EXP_ID}", exp_id or task.lower())
-    prompt = launch_prompt(agent, task=task, notebook=notebook, run_dir=run_dir, sha=sha)
+    log_dir = agent.log_dir.replace("{EXP_ID}", exp_id or task.lower())
+    prompt = launch_prompt(agent, task=task, log_dir=log_dir, run_dir=run_dir, sha=sha)
     argv = claude_argv(
         agent, prompt=prompt, session_id=session_id,
         settings_path=f"{run_dir}/settings.json",

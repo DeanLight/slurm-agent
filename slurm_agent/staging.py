@@ -99,7 +99,7 @@ if test():
     from tests.conftest import FakeRunner
 
     agent = AgentConfig(repo="DeanLight/deepreasoner-baselines", ref="claude/exp14",
-                        workdir="~/work/baselines", notebook="experiments/run.py",
+                        workdir="~/work/baselines", log_dir="experiments",
                         max_budget_usd=8, requires_env=["HF_TOKEN", "OPENAI_BASE_URL"])
 
     fresh = FakeRunner({"test -e": "no", "rev-parse": "a1b2c3d4\n"})

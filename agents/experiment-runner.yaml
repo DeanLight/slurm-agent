@@ -5,7 +5,9 @@
 repo: DeanLight/deepreasoner-baselines
 ref: claude/exp14-decomp-longdoc
 workdir: ~/work/deepreasoner-baselines
-notebook: experiments/{EXP_ID}/run.py
+# The experiment log DIRECTORY. The agent continues an existing notebook here
+# or starts a new one; the status hook reports whichever it is working in.
+log_dir: experiments/{EXP_ID}
 
 # Checked BEFORE launch, so a missing token costs a refusal instead of a GPU-hour.
 requires_env:

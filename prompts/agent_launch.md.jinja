@@ -5,9 +5,16 @@ slurm-agent orchestrator on {{ task }}.
 
 - **Repo:** {{ repo }} at `{{ ref }}` ({{ sha }}), already staged at `{{ workdir }}`.
   You are running there. Do not clone anything.
-- **Your experiment log:** `{{ notebook }}`. Write it continuously with juplit, round by
-  round, following the Experiment Guide. It is the deliverable, and it is what a human
-  reads afterwards — not this session's transcript.
+- **Your experiment log directory:** `{{ log_dir }}`.
+  **Look in it before you start.** An analysis grows several notebooks as it progresses,
+  so decide which case you are in:
+    - *An existing notebook covers this question and is unfinished* — continue it. Its run
+      cells are idempotent, so finished rounds skip and you pick up where it stopped.
+    - *The question is new, or the existing notebooks are complete* — start a new notebook
+      there, named for the question rather than the date.
+  Say which you chose, and why, in the notebook's first markdown cell. Write it
+  continuously with juplit, round by round, following the Experiment Guide: it is the
+  deliverable, and what a human reads afterwards — not this session's transcript.
 - **Your run root:** `{{ run_dir }}` (also in `$SLURM_AGENT_RUN_DIR`). Everything the
   orchestrator writes lives there. Never put orchestrator files inside the repo — a dirty
   tree blocks the next launch.
@@ -34,9 +41,11 @@ python3 $SLURM_AGENT_RUN_DIR/remote_status.py needs_env    --waiting-on HF_TOKEN
 python3 $SLURM_AGENT_RUN_DIR/remote_status.py needs_human  --waiting-on "describe it"
 ```
 
-Liveness is recorded for you at every turn boundary, so a forgotten call costs detail, not
-detection. What only you know is the *meaning*: which round you are on and what you are
-blocked on.
+You do not have to remember this. Liveness is recorded for you at every turn boundary, and
+a hook will prompt you whenever cells have run without a round being recorded — so a
+forgotten call costs detail, not detection. What only you know is the *meaning*: which
+round you are on, and what you are blocked on. Which notebook you are in is observed from
+the log directory, so you never need to report that.
 
 ## Money, and your lease
 
