@@ -103,16 +103,17 @@ class ClusterConfig(BaseModel):
     default_qos: str = "interactive"
     gpu_usd_per_hour: float = 0.90
     run_root: str = "~/.slurm-agent/runs"
-    # Whether an allocation can outlive the ssh that asked for it. `poe healthcheck --full`
-    # probes this; tmux is the fallback when a site refuses `salloc --no-shell`.
-    allocation_mode: Literal["no_shell", "tmux"] = "no_shell"
+    # How an allocation is held so it outlives the ssh that asked for it. `tmux` by
+    # default because it is OBSERVABLE: the login node keeps a named session you can
+    # attach to, so a stuck allocation is more than a job id. `no_shell` needs no tmux.
+    allocation_mode: Literal["tmux", "no_shell"] = "tmux"
 
 
 # %%
 if test():
     cluster = ClusterConfig(login_host="tillicum-login")
     assert cluster.gpu_usd_per_hour == 0.90
-    assert cluster.allocation_mode == "no_shell"
+    assert cluster.allocation_mode == "tmux"      # observable by default
     display(cluster.model_dump())
 
 

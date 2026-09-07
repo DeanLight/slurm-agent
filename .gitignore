@@ -14,8 +14,10 @@ dist/
 # The real secrets. templates/envrc.example is the committed placeholder version.
 .envrc
 
-# Session artifact notebooks are committed WITH their outputs — the evidence is the point.
-!sessions/**/*.ipynb
+# Session notebooks are NOT committed here. A session's record belongs in the repo the
+# agents worked on, alongside the experiment it is about — this repo is the control plane
+# and commits no notebooks of its own.
+sessions/
 
 # The usage ledger is per-machine.
 ledger.jsonl

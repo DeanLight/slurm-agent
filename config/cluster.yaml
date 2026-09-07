@@ -10,6 +10,14 @@ gpu_usd_per_hour: 0.90
 # silently measuring unreviewed code.
 run_root: ~/.slurm-agent/runs
 
-# Can an allocation outlive the ssh that asked for it? `poe healthcheck --full` probes it.
-# Fall back to `tmux` if the site refuses `salloc --no-shell`.
-allocation_mode: no_shell
+# How an allocation is held so it outlives the ssh that asked for it.
+#
+#   tmux      (default) a named, detached session on the login node holds the salloc.
+#             Chosen for OBSERVABILITY, not just compatibility: `ssh tillicum-login` then
+#             `tmux ls` shows every allocation this repo started, and you can attach to the
+#             shell that spawned one. `salloc --no-shell` leaves nothing to attach to, so a
+#             stuck allocation is only a job id.
+#   no_shell  `salloc --no-shell`. Nothing to attach to, but no tmux dependency either.
+#
+# `poe healthcheck` checks tmux is present on the login node whenever this is `tmux`.
+allocation_mode: tmux
