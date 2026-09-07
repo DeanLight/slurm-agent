@@ -17,8 +17,13 @@
 # # Session {{SESSION}}
 #
 # The record of one orchestration session: what was allocated, what was launched, what each
-# remote agent concluded, and what it cost. This notebook is committed **with its outputs**
-# — it is what a human reads afterwards, and what makes a run auditable six weeks later.
+# remote agent concluded, and what it cost. Commit it **with its outputs** — it is what a
+# human reads afterwards, and what makes a run auditable six weeks later.
+#
+# **It belongs in the repo the agents worked on**, alongside the experiment it is about —
+# `poe session-new NAME --into <that-repo>/experiments`. The slurm-agent control plane
+# commits no notebooks of its own, so a session scaffolded here without `--into` is
+# gitignored scratch.
 #
 # Chat scrollback is not the record. This is.
 

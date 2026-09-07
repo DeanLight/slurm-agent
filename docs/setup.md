@@ -10,6 +10,14 @@ poe hooks          # git pre-commit hooks
 poe init           # create the footprint, then prove it works
 ```
 
+`poe init` **appends** its hosts to `~/.ssh/config` between markers, and skips entirely if
+you have already defined `tillicum-login` yourself. Your other clusters and servers are
+never touched, and nothing there is overwritten.
+
+Allocations are held in `tmux` on the login node by default, so `poe healthcheck` checks
+tmux is installed there. Set `allocation_mode: no_shell` in `config/cluster.yaml` if it is
+not — you lose the ability to attach to a running allocation.
+
 `poe init` creates what it safely can — `.envrc` from the template at mode 0600, the ssh
 config entries, the run root on the cluster — and then runs a full healthcheck that
 **really sends** a test email and Slack message, from your laptop *and* from Tillicum. A

@@ -44,7 +44,7 @@ loop you can stop and restart at will.
 | `poe flush` | Drop finished runs from `status` |
 | `poe notify-test` | Really send, from here and from the cluster |
 | `poe monitor-*` | The change-gated usage digest and its schedule |
-| `poe session-new NAME` | Scaffold a session artifact notebook |
+| `poe session-new NAME --into DIR` | Scaffold a session notebook in the repo it is about |
 
 `poe --help` is the full inventory.
 

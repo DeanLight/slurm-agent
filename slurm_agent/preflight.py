@@ -28,6 +28,7 @@
 
 # %%
 import os
+import re
 import shutil
 import stat
 from pathlib import Path
@@ -118,17 +119,7 @@ def init(cluster: ClusterConfig, manager: ManagerConfig, agents: list[AgentConfi
                           detail=f"created {envrc} at 0600 with {SECRET_PLACEHOLDER} values",
                           fix=None))
 
-    for name in ("config", "tillicum-node-config"):
-        source = Path("ssh_config_templates") / name
-        target = ssh_dir / name
-        if not source.exists():
-            continue
-        if target.exists():
-            made.append(Check(name=f"ssh {name}", ok=True, detail=f"{target} already exists"))
-        elif apply:
-            ssh_dir.mkdir(parents=True, exist_ok=True)
-            shutil.copy(source, target)
-            made.append(Check(name=f"ssh {name}", ok=True, detail=f"installed {target}"))
+    made.extend(_install_ssh(ssh_dir, cluster, apply=apply))
 
     if apply:
         try:
@@ -137,6 +128,55 @@ def init(cluster: ClusterConfig, manager: ManagerConfig, agents: list[AgentConfi
         except RemoteError as exc:
             made.append(Check(name="run root", ok=False, detail=str(exc),
                               fix="check `ssh` reaches the login host"))
+    return made
+
+
+SSH_MARK_START = "# >>> slurm-agent >>>"
+SSH_MARK_END = "# <<< slurm-agent <<<"
+
+
+def _install_ssh(ssh_dir: Path, cluster: ClusterConfig, *, apply: bool = True) -> list[Check]:
+    """Add our hosts to ~/.ssh/config without disturbing anything already there.
+
+    Never overwrites. `~/.ssh/config` is a file people keep years of other clusters and
+    servers in, so our block is appended between markers and only if the host is not
+    already defined — by us or by hand.
+    """
+    made: list[Check] = []
+
+    node_source = Path("ssh_config_templates") / "tillicum-node-config"
+    node_target = ssh_dir / node_source.name
+    if node_source.exists():
+        if node_target.exists():
+            # Ours alone, but `poe job-up` rewrites its Hostname — never clobber that.
+            made.append(Check(name="ssh node config", ok=True,
+                              detail=f"{node_target} already exists — kept"))
+        elif apply:
+            ssh_dir.mkdir(parents=True, exist_ok=True)
+            shutil.copy(node_source, node_target)
+            made.append(Check(name="ssh node config", ok=True,
+                              detail=f"installed {node_target}"))
+
+    source = Path("ssh_config_templates") / "config"
+    target = ssh_dir / "config"
+    if not source.exists():
+        return made
+
+    existing = target.read_text() if target.exists() else ""
+    if re.search(rf"(?im)^\s*host\s+.*\b{re.escape(cluster.login_host)}\b", existing):
+        made.append(Check(name="ssh config", ok=True,
+                          detail=f"{cluster.login_host} already defined in {target} — untouched"))
+        return made
+
+    block = f"\n{SSH_MARK_START}\n{source.read_text().strip()}\n{SSH_MARK_END}\n"
+    if apply:
+        ssh_dir.mkdir(parents=True, exist_ok=True)
+        with target.open("a") as handle:
+            handle.write(block)
+        target.chmod(stat.S_IRUSR | stat.S_IWUSR)
+    made.append(Check(name="ssh config", ok=True,
+                      detail=f"appended {cluster.login_host} to {target} "
+                             f"({len(existing.splitlines())} existing lines kept)"))
     return made
 
 
@@ -172,6 +212,47 @@ if test():
         envrc.write_text("SLURM_AGENT_SMTP_HOST=real.smtp.host\n")
         init(cluster, manager, [], FakeRunner(), envrc=envrc, ssh_dir=Path(tmp) / "ssh")
         assert envrc.read_text() == "SLURM_AGENT_SMTP_HOST=real.smtp.host\n"
+
+
+# %%
+if test():
+    # ~/.ssh/config is where people keep years of other clusters and servers. Our hosts are
+    # APPENDED between markers; nothing already there is touched, and nothing is overwritten.
+    with tempfile.TemporaryDirectory() as tmp:
+        ssh_dir = Path(tmp) / "ssh"
+        ssh_dir.mkdir()
+        mine = ("Host my-other-cluster\n    Hostname login.elsewhere.edu\n"
+                "    User someone\n\nHost bastion\n    Hostname 10.0.0.1\n")
+        (ssh_dir / "config").write_text(mine)
+
+        rows = _install_ssh(ssh_dir, ClusterConfig(login_host="tillicum-login"))
+        after = (ssh_dir / "config").read_text()
+
+        assert after.startswith(mine)          # every existing line survives, in order
+        assert "my-other-cluster" in after and "bastion" in after
+        assert SSH_MARK_START in after and "tillicum-login" in after
+        assert any("appended" in r.detail for r in rows)
+        display(after)
+
+
+# %%
+if test():
+    with tempfile.TemporaryDirectory() as tmp:
+        ssh_dir = Path(tmp) / "ssh"
+        ssh_dir.mkdir()
+        # A host the user defined BY HAND is left completely alone — no second block, no
+        # duplicate Host stanza fighting theirs.
+        hand_rolled = "Host tillicum-login\n    Hostname klone.hyak.uw.edu\n    User me\n"
+        (ssh_dir / "config").write_text(hand_rolled)
+
+        rows = _install_ssh(ssh_dir, ClusterConfig(login_host="tillicum-login"))
+        assert (ssh_dir / "config").read_text() == hand_rolled
+        assert any("untouched" in r.detail for r in rows)
+
+        # And running init twice does not append a second block.
+        _install_ssh(ssh_dir, ClusterConfig(login_host="tillicum-login"))
+        assert (ssh_dir / "config").read_text().count("Host tillicum-login") == 1
+        display(rows[-1].detail)
 
 
 # %% [markdown]
@@ -217,6 +298,8 @@ def healthcheck(cluster: ClusterConfig, manager: ManagerConfig, agents: list[Age
             checks.append(Check(name=name, ok=None, detail="skipped: cluster unreachable"))
     else:
         checks.append(_remote_exists(run, cluster.run_root, "run root"))
+        if cluster.allocation_mode == "tmux":
+            checks.append(_tmux(run))
         checks.extend(_remote_envrc(run, agents))
 
     # ── FULL ─────────────────────────────────────────────────────────────────────
@@ -246,6 +329,23 @@ def _envrc_check(envrc: Path) -> Check:
         return Check(name=".envrc", ok=False, detail=f"{envrc} is {oct(mode)}",
                      fix=f"chmod 600 {envrc}")
     return Check(name=".envrc", ok=True, detail=f"{envrc} present at 0600")
+
+
+def _tmux(run: Runner) -> Check:
+    """Is tmux on the login node? Every allocation depends on it in the default mode.
+
+    Fast tier, because it is one command over the connection that is already open — and
+    finding out here beats finding out when an allocation silently fails to come up.
+    """
+    version = run("command -v tmux >/dev/null && tmux -V || echo missing").strip()
+    present = version != "missing" and bool(version)
+    return Check(
+        name="tmux", ok=present,
+        detail=f"login node has {version}" if present else "no tmux on the login node",
+        fix=None if present else
+        "install tmux there, or set allocation_mode: no_shell in config/cluster.yaml "
+        "(you lose the ability to attach to a running allocation)",
+    )
 
 
 def _remote_exists(run: Runner, path: str, name: str) -> Check:
@@ -281,18 +381,30 @@ def _remote_envrc(run: Runner, agents: list[AgentConfig]) -> list[Check]:
 
 
 def _allocation_probe(run: Runner, cluster: ClusterConfig) -> Check:
-    """Does an allocation outlive the ssh that asked for it? Every lease depends on it."""
+    """Does an allocation outlive the ssh that asked for it? Every lease depends on it.
+
+    Probes the mode that is actually configured, rather than assuming --no-shell: under
+    `tmux` the question is whether a detached session survives the connection dropping.
+    """
+    tmux_mode = cluster.allocation_mode == "tmux"
+    inner = "salloc --time=00:01:00 --gpus=0 --job-name=sa-probe"
+    command = (f"tmux new-session -d -s sa-probe {inner!r} && sleep 2 && "
+               "tmux has-session -t sa-probe && echo held" if tmux_mode
+               else f"{inner} --no-shell 2>&1 | head -3 || true")
     try:
-        out = run("salloc --no-shell --time=00:01:00 --gpus=0 --job-name=sa-probe 2>&1 "
-                  "| head -3 || true")
-        works = "error" not in out.lower() and "invalid" not in out.lower()
-        run("scancel --name=sa-probe || true")
+        out = run(command)
+        works = ("held" in out if tmux_mode
+                 else "error" not in out.lower() and "invalid" not in out.lower())
+        run("tmux kill-session -t sa-probe 2>/dev/null; scancel --name=sa-probe || true")
+        other = "no_shell" if tmux_mode else "tmux"
         return Check(name="allocation probe", ok=works,
-                     detail="salloc --no-shell accepted" if works else out.strip()[:120],
-                     fix=None if works else "set allocation_mode: tmux in config/cluster.yaml")
+                     detail=(f"{cluster.allocation_mode} allocation held after the ssh closed"
+                             if works else out.strip()[:120]),
+                     fix=None if works else
+                     f"try allocation_mode: {other} in config/cluster.yaml")
     except RemoteError as exc:
         return Check(name="allocation probe", ok=False, detail=str(exc)[:120],
-                     fix="set allocation_mode: tmux in config/cluster.yaml")
+                     fix="try the other allocation_mode in config/cluster.yaml")
 
 
 def _agent_credential(run: Runner) -> Check:
@@ -335,6 +447,34 @@ if test():
         assert not runner.asked("claude")
         assert rows["notify send"].ok is None
         display(render(list(rows.values())))
+
+
+# %%
+if test():
+    with tempfile.TemporaryDirectory() as tmp:
+        envrc = Path(tmp) / ".envrc"
+        envrc.write_text("SLURM_AGENT_SMTP_HOST=smtp.x\n")
+        envrc.chmod(0o600)
+
+        # tmux is checked in the FAST tier, because every allocation depends on it in the
+        # default mode and it is one command over a connection already open.
+        has_tmux = FakeRunner({"tmux -V": "tmux 3.3a\n", "id -un": "d\n", "test -d": "yes"})
+        rows = {c.name: c for c in healthcheck(cluster, manager, [], has_tmux,
+                                               envrc=envrc, env=good_env)}
+        assert rows["tmux"].ok and "3.3a" in rows["tmux"].detail
+
+        no_tmux = FakeRunner({"tmux -V": "missing\n", "id -un": "d\n", "test -d": "yes"})
+        rows = {c.name: c for c in healthcheck(cluster, manager, [], no_tmux,
+                                               envrc=envrc, env=good_env)}
+        assert rows["tmux"].ok is False
+        assert "allocation_mode: no_shell" in rows["tmux"].fix
+        display(rows["tmux"].model_dump())
+
+        # Under no_shell there is no tmux dependency, so the row is not raised at all.
+        plain = ClusterConfig(login_host="h", allocation_mode="no_shell")
+        names = [c.name for c in healthcheck(plain, manager, [], has_tmux,
+                                             envrc=envrc, env=good_env)]
+        assert "tmux" not in names
 
 
 # %%

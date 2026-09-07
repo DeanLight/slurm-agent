@@ -29,6 +29,14 @@ that is correct, not a failure. Many agents share one allocation as job steps, s
 rarely need a second. If you need to run something while that allocation is busy, use
 batch.
 
+Allocations are held in a named `tmux` session on the login node, so you can reach the
+shell that spawned one rather than only its job id:
+
+```bash
+ssh tillicum-login tmux ls          # every allocation this repo started
+ssh -t tillicum-login tmux attach -t remote_dev
+```
+
 ## Launching an agent
 
 ```bash
@@ -58,8 +66,15 @@ is lost if you stop the loop: it holds no state and rebuilds everything from the
 
 ## Handing off
 
-The session notebook is the record, not this conversation. `poe session-new <name>`
-scaffolds one; commit it with its outputs.
+The session notebook is the record, not this conversation — and it belongs in **the repo
+the agents worked on**, not here:
+
+```bash
+poe session-new exp14-sweep --into ~/work/deepreasoner-baselines/experiments
+```
+
+Commit it there with its outputs. This control plane commits no notebooks of its own; a
+session scaffolded without `--into` lands in a gitignored `sessions/` and is scratch.
 
 ## Tearing down
 

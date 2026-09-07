@@ -352,19 +352,27 @@ def monitor_uninstall() -> None:
 
 
 @app.command(name="session-new")
-def session_new(name: str) -> None:
-    """Scaffold a session artifact notebook from the template."""
+def session_new(name: str, into: str | None = None) -> None:
+    """Scaffold a session notebook, in the repo the session is about.
+
+    `--into` is where it belongs: a session's record is committed alongside the experiment
+    it concerns, not in this control plane. Without it the notebook lands in a gitignored
+    `sessions/` here, which is fine for a scratch session but is never committed.
+    """
     import datetime
     from pathlib import Path
 
     slug = f"{datetime.date.today():%Y-%m-%d}-{name}"
-    target = Path("sessions") / slug / "session.py"
+    root = Path(into) if into else Path("sessions")
+    target = root / slug / "session.py"
     if target.exists():
         raise SystemExit(f"{target} already exists")
     target.parent.mkdir(parents=True, exist_ok=True)
     template = Path("sessions/_template.py").read_text()
     target.write_text(template.replace("{{SESSION}}", slug))
-    print(f"created {target} — `poe nb` to open it")
+    print(f"created {target}")
+    if into is None:
+        print("this is gitignored scratch — pass --into <repo>/experiments to keep it")
 
 
 def main() -> None:
