@@ -384,8 +384,8 @@ def launch_batch(agent: AgentConfig, task: str, run: Runner, cluster: ClusterCon
                  gpus: int = 1, cpus: int = 8, mem: str = "200G") -> tuple[str, str]:
     """Submit the same agent as an sbatch job. Returns (session_id, job_id)."""
     session_id, run_dir, sha = prepare_run(agent, task, run, cluster, exp_id)
-    notebook = agent.notebook.replace("{EXP_ID}", exp_id or task.lower())
-    prompt = launch_prompt(agent, task=task, notebook=notebook, run_dir=run_dir, sha=sha)
+    log_dir = agent.log_dir.replace("{EXP_ID}", exp_id or task.lower())
+    prompt = launch_prompt(agent, task=task, log_dir=log_dir, run_dir=run_dir, sha=sha)
     argv = claude_argv(
         agent, prompt=prompt, session_id=session_id,
         settings_path=f"{run_dir}/settings.json",
