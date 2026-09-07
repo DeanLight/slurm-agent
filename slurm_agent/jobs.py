@@ -184,8 +184,9 @@ def job_up(name: str, run: Runner, cluster: ClusterConfig, *, gpus: int = 1,
         flags.append(f"--account={cluster.account}")
     salloc = "salloc --no-shell " + " ".join(flags)
     if cluster.allocation_mode == "tmux":
-        # Fallback for a site that refuses --no-shell: a detached tmux session on the
-        # login node holds an ordinary salloc, which survives the ssh dropping.
+        # The default. A detached tmux session on the login node holds an ordinary salloc,
+        # which survives the ssh dropping AND stays attachable: `tmux ls` on the login node
+        # shows every allocation this repo started, so a stuck one is more than a job id.
         salloc = f"tmux new-session -d -s {quote(name)} {quote('salloc ' + ' '.join(flags))}"
     run(salloc)
     return _settle(None, run, cluster, name, wait_s, poll_s)
@@ -224,6 +225,17 @@ def job_down(name: str, run: Runner) -> str:
     run(f"scancel {quote(job.job_id)}")
     log.info("job.cancelled", name=name, job_id=job.job_id)
     return job.job_id
+
+
+def attach_command(name: str, cluster: ClusterConfig) -> str | None:
+    """How to reach the shell that spawned this allocation, when there is one.
+
+    The point of holding allocations in tmux: `poe job-status` can hand you a command that
+    puts you in front of the salloc itself, not just its job id.
+    """
+    if cluster.allocation_mode != "tmux":
+        return None
+    return f"ssh -t {cluster.login_host} tmux attach -t {quote(name)}"
 
 
 def job_shell_command(name: str, run: Runner, cluster: ClusterConfig) -> list[str]:
@@ -272,6 +284,14 @@ if test():
     assert argv[:3] == ["ssh", "-t", "tillicum-login"]
     assert "--jobid=62526" in argv[3] and "--overlap" in argv[3]
     display(argv)
+
+    # In tmux mode there is a shell to attach to; under --no-shell there is not, and
+    # saying so is better than offering a command that would fail.
+    assert attach_command("remote_dev", cluster_cfg) == (
+        "ssh -t tillicum-login tmux attach -t remote_dev")
+    assert attach_command("remote_dev",
+                          ClusterConfig(login_host="h", allocation_mode="no_shell")) is None
+    display(attach_command("remote_dev", cluster_cfg))
 
 
 # %%

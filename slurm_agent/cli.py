@@ -57,6 +57,9 @@ def job_up(name: str, gpus: int = 1, time: str = "04:00:00", qos: str | None = N
     left = job.time_left_s and f"{job.time_left_s // 3600}:{job.time_left_s % 3600 // 60:02d} left"
     print(f"job {job.job_id} on {job.node or 'pending'} · {job.state} · {left or '—'} "
           f"· {job.gpus} gpu · est. ${job.gpu_usd(cluster):.2f} so far")
+    attach = jobs.attach_command(job.name, cluster)
+    if attach:
+        print(f"attach: {attach}")
 
 
 @app.command(name="job-status")
@@ -74,6 +77,10 @@ def job_status() -> None:
         kind = "batch" if job.batch else "interactive"
         print(f"{job.name:<14} {job.job_id:<8} {job.node or '-':<6} {job.state:<3} "
               f"{left:<14} {job.gpus} gpu  ${job.gpu_usd(cluster):.2f}  {kind}")
+    attach = jobs.attach_command(rows[0].name, cluster) if rows else None
+    if attach:
+        print(f"\nattach to the shell that spawned an allocation: "
+              f"ssh -t {cluster.login_host} tmux ls")
 
 
 @app.command(name="job-shell")
