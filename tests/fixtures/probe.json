@@ -13,7 +13,8 @@
     "job_id": "62526",
     "mode": "interactive",
     "leases_used": 2,
-    "max_leases": 4
+    "max_leases": 4,
+    "log_dir": "/home/d/work/repo/experiments/exp14"
    },
    "status": {
     "state": "running",
@@ -33,7 +34,8 @@
     "job_id": "62531",
     "mode": "batch",
     "leases_used": 1,
-    "max_leases": 1
+    "max_leases": 1,
+    "log_dir": "/home/d/work/repo/experiments/exp14"
    },
    "status": {
     "state": "needs_env",
@@ -54,7 +56,8 @@
     "job_id": "61000",
     "mode": "batch",
     "leases_used": 1,
-    "max_leases": 1
+    "max_leases": 1,
+    "log_dir": "/home/d/work/repo/experiments/exp14"
    },
    "status": {
     "state": "finished",

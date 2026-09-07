@@ -20,10 +20,16 @@ for dir in "$RUN_ROOT"/*/; do
     [ -f "$dir/launch.json" ] || continue
     [ $first -eq 1 ] || printf ','
     first=0
-    nb=$(sed -n 's/.*"notebook": *"\([^"]*\)".*/\1/p' "$dir/launch.json" | head -1)
-    ipynb="${nb%.py}.ipynb"
+    # An analysis grows several notebooks, so observed progress is the NEWEST .ipynb under
+    # the log dir — not a path fixed at launch, which would go stale the moment the agent
+    # opened a second one.
+    logs=$(sed -n 's/.*"log_dir": *"\([^"]*\)".*/\1/p' "$dir/launch.json" | head -1)
+    ipynb=""
+    [ -n "$logs" ] && [ -d "$logs" ] && ipynb=$(find "$logs" -name '*.ipynb' \
+        -not -path '*/.ipynb_checkpoints/*' -printf '%T@ %p\n' 2>/dev/null \
+        | sort -rn | head -1 | cut -d' ' -f2-)
     mtime=0; bytes=0
-    if [ -f "$ipynb" ]; then
+    if [ -n "$ipynb" ] && [ -f "$ipynb" ]; then
         mtime=$(stat -c %Y "$ipynb" 2>/dev/null || stat -f %m "$ipynb" 2>/dev/null || echo 0)
         bytes=$(stat -c %s "$ipynb" 2>/dev/null || stat -f %z "$ipynb" 2>/dev/null || echo 0)
     fi
