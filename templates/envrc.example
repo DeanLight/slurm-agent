@@ -1,30 +1,36 @@
-# Copy this to .envrc (`poe init` does it for you), then replace every <secret-here>.
+# The COMMITTED template. Two files are made from it, and they are not the same file:
 #
-#   cp templates/envrc.example .envrc && chmod 600 .envrc
+#   * your laptop's .envrc  — `poe init` writes it, commenting out the keys that are not
+#     read here. It holds the keys for reaching YOU.
+#   * a cluster-side .envrc — you copy this file yourself, beside the repo an agent runs
+#     in, and fill in that agent's keys there:
+#         scp templates/envrc.example tillicum-login:~/work/<repo>/.envrc
+#         ssh tillicum-login 'chmod 600 ~/work/<repo>/.envrc && $EDITOR ...'
 #
-# .envrc is gitignored and holds the REAL values. This file is committed and must never
-# hold one — a test asserts every value below is literally <secret-here>.
+# Everything below is live here on purpose: this one file has to be copyable to either
+# place. A test asserts every value below is literally <secret-here>, because this file is
+# committed and a real credential in it would be the one way a copyable template leaks.
 #
-# The same file is needed on Tillicum, so remote agents can reach you from the compute
-# node. Put it beside the repo they run in, at mode 0600.
-#
-# Every key here is declared in config/manager.yaml or an agents/*.yaml `requires_env`;
-# `poe healthcheck` tells you which are still missing or unfilled.
+# Which keys a place actually needs is declared in config/manager.yaml and each
+# agents/*.yaml. `poe hc` checks each against the place it applies to and says so.
 
-# ── email (the usage digest, and agents announcing themselves) ──────────────────
+# ── keys ──────────────────────────────────────────────────────────────────────
+
+# ── email · the manager's own · read on your LAPTOP ────────────────────────────
+# The usage digest, and agents announcing themselves.
 SLURM_AGENT_SMTP_HOST=<secret-here>
 SLURM_AGENT_SMTP_PORT=<secret-here>
 SLURM_AGENT_SMTP_USER=<secret-here>
 # An app password, never your account password.
 SLURM_AGENT_SMTP_PASSWORD=<secret-here>
 
-# ── slack (optional; drop it from config/manager.yaml if you do not want it) ────
+# ── slack · the manager's own · read on your LAPTOP ────────────────────────────
 # An incoming webhook URL: https://api.slack.com/messaging/webhooks
+# Do not want Slack? Drop this key from config/manager.yaml as well.
 SLURM_AGENT_SLACK_WEBHOOK=<secret-here>
 
-# ── declared by agents/*.yaml ───────────────────────────────────────────────────
-# These belong in the .envrc of the repo the AGENT runs in, on Tillicum — not on your
-# laptop. They are listed here because this file is the one inventory of every key the
-# repo declares; `poe healthcheck` checks each against the workdir it actually applies to.
+# ── declared by agents/*.yaml · read on the CLUSTER, in the staged repo ────────
+# Not read on your laptop. `poe init` comments these out in the copy it writes there,
+# and names the remote path each one belongs in instead.
 HF_TOKEN=<secret-here>
 OPENAI_BASE_URL=<secret-here>

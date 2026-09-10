@@ -18,6 +18,12 @@ dropped `ControlMaster` after a network change. If it fails on `cluster identity
 On a fresh clone, `poe init` instead — it creates the footprint and finishes by really
 sending a test notification, so setup ends in a proof.
 
+Read the report by group. Every row sits under the machine it is about — `this laptop`,
+`the login node · <host>`, or `staged repo · <host>:<workdir> [agents/<kind>.yaml → repo@ref]`.
+A key missing under a staged-repo heading is fixed over ssh at that path, never here; the
+laptop is only ever asked for `config/manager.yaml`'s own keys. Those headings are also the
+answer to "which repos does this manage?" — there is no registry beyond `agents/*.yaml`.
+
 `poe hc` proves the wiring. `docs/quickstart.ipynb` proves the wiring **carries an agent**:
 it puts one interactive and one batch smoke agent on the same allocation, each capped at
 `$1` by `agents/smoke.yaml`, and both push to a throwaway PR. Reach for it when a real

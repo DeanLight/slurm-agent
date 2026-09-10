@@ -264,6 +264,17 @@ def load(path: Path | str, model: type[T]) -> T:
     return model.model_validate(yaml.safe_load(path.read_text()) or {})
 
 
+def load_agents(directory: Path | str = "agents") -> dict[str, AgentConfig]:
+    """Every `agents/<kind>.yaml`, keyed by its **kind** — the filename stem.
+
+    The kind is the answer to "which repos does this clone manage?": one file per agent,
+    and the file names the repo, the ref and the workdir it is staged into. Keeping the
+    stem alongside the config is what lets a report say `agents/experiment-runner.yaml`
+    rather than leaving you to guess which file to edit.
+    """
+    return {p.stem: load(p, AgentConfig) for p in sorted(Path(directory).glob("*.yaml"))}
+
+
 # %%
 if test():
     import tempfile

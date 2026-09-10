@@ -32,6 +32,16 @@ an agent. That rule is what makes a closed laptop lossless and two sessions agre
   `.envrc` on each machine; `requires_env` is how a config says what it needs. `poe` loads
   `.envrc` for every task via `[tool.poe] envfile`, so there is no credentials reader here
   and no `direnv` dependency.
+- **Every message names one of three places.** *This laptop* (this checkout, `~/.ssh/config`,
+  the keys for reaching you), *the login node* (run root, tmux, the Claude credential), and
+  *each staged repo on the cluster* (the keys that agent declares). They do not share files
+  and they do not share keys: `config/manager.yaml` is the laptop's, `agents/<kind>.yaml` is
+  that repo's. A `Check` carries `where`, `render` groups by it, and a row that cannot say
+  which machine it means is a bug — asking the laptop for an agent's `HF_TOKEN` failed a
+  correctly-configured machine and sent people to fill in a file nothing reads.
+- **`agents/*.yaml` IS the list of managed repos.** One file per agent, naming repo, ref and
+  workdir. That is the whole registry, and it follows from the one rule: nothing is
+  remembered between runs, so delete the file and the repo is no longer managed.
 
 ## Working here
 

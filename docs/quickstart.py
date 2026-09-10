@@ -47,6 +47,31 @@
 # If a cell suddenly starts timing out halfway through, that session died. Re-open it and
 # re-run the cell; nothing here loses state, because none of it is *kept* here.
 #
+# ## Three places, and why the reports keep saying so
+#
+# Almost every confusing thing about setting this up comes from three different machines
+# each wanting a different `.envrc`, and a report that does not say which one it means.
+# There are exactly three kinds of place:
+#
+# | Place | What lives there | What its `.envrc` holds |
+# |---|---|---|
+# | **This laptop** | this checkout, `~/.ssh/config`, the supervision loop | the keys for **reaching you** — SMTP, Slack |
+# | **The login node** | the run root, `tmux`, your Claude credential | nothing — no `.envrc` here at all |
+# | **Each staged repo on the cluster** | the repo an agent runs in | the keys **that agent** declares, e.g. `HF_TOKEN` |
+#
+# So `HF_TOKEN` is never a laptop problem. `poe init` writes your laptop's `.envrc` with
+# keys like that **commented out**, naming the remote path each belongs in instead, and
+# `poe hc` checks each key against the machine that actually reads it. Every row in every
+# report below sits under a heading naming its machine.
+#
+# ### How it knows which repos it manages
+#
+# It reads `agents/*.yaml`, one file per agent, and nothing else. Each file names a repo,
+# a ref and the workdir it is staged into — and that is the entire list. There is no
+# registry, nothing remembered between runs, and nothing to deregister: delete the file
+# and it stops managing that repo. `poe init` prints the list before it does anything, and
+# the next cell prints it on its own.
+#
 # ## What it will cost
 #
 # One GPU for well under an hour, and two agents capped at `$1` each by
@@ -100,12 +125,41 @@ def sh(cmd: str, *, timeout: int = 900, quiet: bool = False) -> subprocess.Compl
 print(f"repo root: {ROOT}")
 
 # %% [markdown]
+# ## 0b. What this clone manages
+#
+# Read this before running anything. It is the whole inventory: your laptop, the login
+# node, and one staged repo per `agents/<kind>.yaml`. Every `MISSING` row you see later
+# belongs to exactly one of these lines.
+
+# %%
+from slurm_agent import preflight  # noqa: E402
+from slurm_agent.config import ClusterConfig, ManagerConfig, load, load_agents  # noqa: E402
+
+cluster = load("config/cluster.yaml", ClusterConfig)
+manager = load("config/manager.yaml", ManagerConfig)
+agent_configs = load_agents()
+print(preflight.inventory(cluster, manager, agent_configs))
+
+# %% [markdown]
 # ## 1. `poe init` — create the local footprint
 #
-# `init` **creates**: `.envrc` from the template at mode 0600, the ssh host entries
-# appended to `~/.ssh/config` between markers, and the run root on the cluster. It never
-# overwrites: an existing `.envrc` is kept, and a `tillicum-login` you defined yourself
-# means it skips the ssh block entirely. Your other clusters are not touched.
+# It prints the inventory again, then a **Creating:** block and a **Checking:** block, both
+# grouped by machine.
+#
+# What it creates, and where:
+#
+# * **on this laptop** — `.envrc` at mode 0600, and the ssh host entries appended to
+#   `~/.ssh/config` between markers;
+# * **on the login node** — the run root.
+#
+# It never overwrites. An existing `.envrc` is kept as-is. A `tillicum-login` you defined
+# yourself means the ssh block is skipped entirely — your other clusters and servers are
+# not touched, and nothing there is replaced.
+#
+# The `.envrc` it writes is **not** a copy of `templates/envrc.example`. It gets a header
+# written for that file — what it is, that it is read on this laptop only, which keys it
+# holds — and any key that is only read on the cluster is written **commented out**, with
+# the remote path it belongs in beside it. Filling one of those in here changes nothing.
 #
 # Then it runs a **full** healthcheck, which really sends mail and Slack.
 #
@@ -116,45 +170,58 @@ print(f"repo root: {ROOT}")
 sh("uv run poe init")
 
 # %% [markdown]
-# ## 2. Fill in `.envrc`, then prove it
+# ## 2. Fill in **this laptop's** `.envrc`
 #
-# `.envrc` is gitignored and holds the real values. `config/manager.yaml` and each
-# `agents/*.yaml` name the **keys**; nothing committed here ever holds a value.
+# Only the keys under `this laptop` in the report — the ones `config/manager.yaml`
+# declares, for reaching you. The commented-out ones are not yours to fill in here; they
+# belong to a staged repo, and step 2b is where those go.
+#
+# `.envrc` is gitignored and holds the real values; the YAML names **keys** and nothing
+# committed here ever holds a value.
 #
 # Edit it in a terminal — not from this notebook, which would put secrets in an output
 # cell:
 #
 # ```bash
-# $EDITOR .envrc     # replace every <secret-here>
+# $EDITOR .envrc     # replace every <secret-here> that is NOT commented out
 # chmod 600 .envrc
 # ```
 #
 # For email you want an **app password**, not your account password. For Slack you want an
 # [incoming webhook](https://api.slack.com/messaging/webhooks) URL.
 #
-# The fast healthcheck below tells you which keys are *still* placeholders. It reads the
-# names from the YAML and the values from `.envrc` — which `poe` loads for every task, so
-# there is no credentials reader in this repo and nothing to leak into an output cell. It
-# prints names only, and it creates nothing.
+# The fast healthcheck below says which keys are still placeholders, under the heading of
+# the machine each is read on. It creates nothing, prints names only, and reads values from
+# `.envrc` the same way every `poe` task does — via `[tool.poe] envfile`, so this repo has
+# no credentials reader of its own and nothing to leak into an output cell.
 
 # %%
 sh("uv run poe hc")
 
 # %% [markdown]
-# ### The other `.envrc`, on the cluster
+# ## 2b. The other `.envrc`s — one per staged repo, on the cluster
 #
-# Remote agents notify from the compute node, so they need their own copy in the repo they
-# run in — that is what `requires_env` in each agent config points at. The smoke agent
-# declares none on purpose, so you can skip this now and come back to it before running a
-# real experiment agent:
+# A different file, on a different machine, holding different keys. It lives beside the
+# repo an agent runs in, and it holds exactly what that agent's `requires_env` declares —
+# `HF_TOKEN` and friends, plus the notification keys if you want that agent to reach you
+# from the compute node.
+#
+# The report names the exact path in its heading, so there is nothing to work out. For
+# `agents/experiment-runner.yaml` that is:
 #
 # ```bash
-# scp templates/envrc.example tillicum-login:~/work/<repo>/.envrc
-# ssh tillicum-login 'chmod 600 ~/work/<repo>/.envrc && $EDITOR ~/work/<repo>/.envrc'
+# scp templates/envrc.example tillicum-login:~/work/deepreasoner-baselines/.envrc
+# ssh tillicum-login 'chmod 600 ~/work/deepreasoner-baselines/.envrc'
+# ssh tillicum-login    # then $EDITOR it there
 # ```
 #
-# `poe hc` checks that file's mode too, and fails loudly at 0644 — Tillicum's filesystem is
-# shared, and a group-readable app password is the real exposure here.
+# `poe hc` checks that file's **mode** too, and fails loudly at 0644 — Tillicum's
+# filesystem is shared, and a group-readable app password is the real exposure here.
+#
+# **Both smoke agents declare no keys at all**, on purpose: a sanity check that needs a
+# credential has two extra ways to fail. So you can skip this step for the trial runs
+# below and come back to it before launching a real experiment agent — their rows will
+# read `declares no keys — nothing needed here`.
 
 # %% [markdown]
 # ### And Claude, logged in on the cluster
@@ -176,10 +243,15 @@ sh("uv run poe hc")
 # `hc` alone is the fast one: run it after moving network or re-authing, when a dropped
 # `ControlMaster` is the usual culprit. `--full` adds the slow proofs — a real allocation
 # probe and a real headless Claude call. `--send` really delivers a test message from your
-# laptop *and* from Tillicum.
+# laptop *and* from Tillicum, which are two different egress paths and neither stands in
+# for the other.
 #
-# A `SKIPPED` row is not a pass. Read every line before going on: everything below this
-# point spends money.
+# Read it by group. `MISSING` under `this laptop` is something you fix here; under a
+# `staged repo · …` heading it is something you fix over ssh, at the path in the heading.
+# A `SKIPPED` row is never a pass — if the login node is unreachable, everything behind it
+# is skipped rather than failed, so that one broken link does not read as eight problems.
+#
+# Everything below this point spends money.
 
 # %%
 hc = sh("uv run poe hc --full --send", timeout=1800)
@@ -196,10 +268,8 @@ assert hc.returncode == 0, "fix the MISSING rows above before spending a GPU-hou
 # nothing lands in this checkout.
 
 # %%
-from slurm_agent.config import AgentConfig, load  # noqa: E402
-
-smoke = load("agents/smoke.yaml", AgentConfig)
-smoke_batch = load("agents/smoke-batch.yaml", AgentConfig)
+smoke = agent_configs["smoke"]
+smoke_batch = agent_configs["smoke-batch"]
 SMOKE_URL = f"https://github.com/{smoke.repo}"
 
 # One branch, two staged trees. Sharing the branch is the point — it is what makes both

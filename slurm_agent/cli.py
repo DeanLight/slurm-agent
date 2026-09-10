@@ -50,17 +50,19 @@ def _manager() -> ManagerConfig:
     return load("config/manager.yaml", ManagerConfig)
 
 
-def _agents() -> list[AgentConfig]:
-    from pathlib import Path
+def _agents() -> dict[str, AgentConfig]:
+    """Every agents/<kind>.yaml, keyed by kind — the whole list of repos this clone manages."""
+    from slurm_agent.config import load_agents
 
-    return [load(p, AgentConfig) for p in sorted(Path("agents").glob("*.yaml"))]
+    return load_agents()
 
 
 def _notify_test():
     from slurm_agent import notify as notifier
 
     cfg = load("config/notify.yaml", notifier.NotifyConfig)
-    return notifier.notify_test(cfg, declared_env_keys(_manager(), _agents()), run=_runner())
+    keys = declared_env_keys(_manager(), list(_agents().values()))
+    return notifier.notify_test(cfg, keys, run=_runner())
 
 
 def _report(checks) -> None:
@@ -91,9 +93,14 @@ def init(send: bool = True) -> None:
 
     cluster, manager, agents = _cluster(), _manager(), _agents()
     run = _runner()
-    for check in preflight.init(cluster, manager, agents, run):
-        print(f"{check.name:<24} {check.detail}")
+    # What this clone manages, BEFORE anything is created — so the report that follows
+    # reads as "this place, that place" rather than a flat list of unattributed failures.
+    print(preflight.inventory(cluster, manager, agents))
     print()
+    print("Creating:")
+    print(preflight.render(preflight.init(cluster, manager, agents, run)))
+    print()
+    print("Checking:")
     _report(preflight.healthcheck(cluster, manager, agents, run, full=True, send=send,
                                   notify_test=_notify_test if send else None))
 
