@@ -40,6 +40,13 @@ an agent. That rule is what makes a closed laptop lossless and two sessions agre
 - `poe init` **creates** the local footprint; `poe healthcheck` (alias `poe hc`) **verifies**
   it and creates nothing. `hc` is fast on purpose — run it after moving network or
   re-authing to Tillicum, where a dropped `ControlMaster` is the usual culprit.
+- `docs/quickstart.py` goes one step further than `hc`: it puts a real interactive agent
+  and a real batch agent on one allocation, each capped at `$1`. `hc` proves the wiring;
+  the quick start proves the wiring carries an agent. It is the one notebook this repo
+  commits with outputs, because those outputs are the proof a clone works.
+- Which brief an agent gets is its own declared property (`prompt:` in `agents/*.yaml`,
+  a template in `prompts/`). Every brief takes the same variables, which is what lets one
+  launcher carry a twelve-hour experiment agent and a two-minute smoke agent.
 - Source lives in `slurm_agent/` as jupytext `py:percent` paired notebooks with `if test():`
   blocks beside each function. Read the juplit skill (`poe skill`) before editing one.
 - Everything that touches the cluster takes a `Runner` (see `slurm_agent/remote.py`). That

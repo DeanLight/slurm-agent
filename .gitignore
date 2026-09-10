@@ -3,8 +3,14 @@
 # !experiments/ablation.ipynb
 slurm_agent/**/*.ipynb
 slurm_agent/*.ipynb
+docs/*.ipynb
+# The quick start is an artifact notebook: run it on a new machine and commit what it
+# printed, because those outputs are the proof the clone works.
+!docs/quickstart.ipynb
 .ipynb_checkpoints/
 .juplit/
+# juplit's pairing state — per-checkout, rebuilt by `poe sync`.
+.sync_hashes.json
 __pycache__/
 *.egg-info/
 .venv/

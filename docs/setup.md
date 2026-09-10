@@ -10,6 +10,14 @@ poe hooks          # git pre-commit hooks
 poe init           # create the footprint, then prove it works
 ```
 
+[`docs/quickstart.ipynb`](quickstart.py) is this page as a notebook you actually run, and
+it goes further: past setup into two real trial agents, one interactive and one batch. Use
+it on a new machine and read this page when a step needs explaining.
+
+```bash
+poe nb             # pair the notebooks, including the quick start
+```
+
 `poe init` **appends** its hosts to `~/.ssh/config` between markers, and skips entirely if
 you have already defined `tillicum-login` yourself. Your other clusters and servers are
 never touched, and nothing there is overwritten.

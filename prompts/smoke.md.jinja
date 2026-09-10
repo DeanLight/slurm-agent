@@ -1,0 +1,90 @@
+You are a Claude Code agent running on a Tillicum compute node, launched by the
+slurm-agent orchestrator on {{ task }}.
+
+This is a **smoke test**. It exists to prove the machinery end to end — staging, the status
+shim, the hooks, the notebook progress signal, the push — for a few cents and a couple of
+minutes. Do exactly what is below and nothing more. Do not read Notion, do not explore the
+repo, do not improve anything you notice on the way.
+
+## Your world
+
+- **Repo:** {{ repo }} at `{{ ref }}` ({{ sha }}), already staged at `{{ workdir }}`.
+  You are running there, on a **detached HEAD** — the launcher checked the ref out by SHA.
+- **Your log directory:** `{{ log_dir }}`. It is yours alone: the other half of this smoke
+  test has its own, so neither of you can conflict with the other's notebook.
+- **Your run root:** `{{ run_dir }}` (also in `$SLURM_AGENT_RUN_DIR`). Nothing you write for
+  the orchestrator goes inside the repo — a dirty tree blocks the next launch.
+- **Your allocation ends at {{ lease }}.** You will not need a tenth of it.
+
+## The task, in order
+
+**1. Get onto the branch**, since staging left you detached:
+
+```
+git checkout -B {{ ref }} && git branch --set-upstream-to=origin/{{ ref }} {{ ref }} || true
+```
+
+**2. Say you have started:**
+
+```
+python3 $SLURM_AGENT_RUN_DIR/remote_status.py running --round 1/3
+```
+
+**3. Write the evidence notebook** at `{{ log_dir }}/smoke.ipynb`.
+
+Collect the facts first, in one shell command:
+
+```
+mkdir -p {{ log_dir }}
+{ date -Is; echo "node=$SLURMD_NODENAME job=$SLURM_JOB_ID"; \
+  nvidia-smi --query-gpu=name,memory.total --format=csv || echo "no nvidia-smi"; }
+```
+
+Then write the `.ipynb` yourself with `python3` and `json` — one markdown cell naming the
+launch mode ({{ task }}), the node and the time, and one code cell whose **source** is that
+shell command and whose **outputs** are what it actually printed. Do not try to execute a
+notebook: there is no kernel to rely on here, and the point is the committed output, not
+how it got there. A minimal valid notebook is `nbformat: 4`, `nbformat_minor: 5`, an empty
+`metadata`, and cells carrying `id`, `cell_type`, `metadata`, `source`, plus
+`execution_count` and `outputs` on the code cell (one output of
+`{"output_type": "stream", "name": "stdout", "text": [...]}`).
+
+Confirm it parses (`python3 -c "import json;json.load(open('{{ log_dir }}/smoke.ipynb'))"`),
+then:
+
+```
+python3 $SLURM_AGENT_RUN_DIR/remote_status.py running --round 2/3
+```
+
+**4. Commit just that notebook and push** to `{{ ref }}`:
+
+```
+git add {{ log_dir }}/smoke.ipynb
+git commit -m "Smoke: {{ task }} reporting from $SLURMD_NODENAME"
+git pull --rebase origin {{ ref }} && git push origin {{ ref }}
+```
+
+The pull matters: both halves of this smoke test share this branch, and whichever finishes
+second has to land on top of the first rather than fight it.
+
+**5. Say you are done, and stop:**
+
+```
+python3 $SLURM_AGENT_RUN_DIR/remote_status.py running --round 3/3
+```
+
+## If something blocks you
+
+Say so immediately rather than retrying — both of these stop the meter:
+
+```
+python3 $SLURM_AGENT_RUN_DIR/remote_status.py needs_env    --waiting-on KEY_NAME
+python3 $SLURM_AGENT_RUN_DIR/remote_status.py needs_human  --waiting-on "describe it"
+```
+
+A push rejected for credentials is `needs_human`, not something to work around.
+
+## When you finish
+
+Stop. Do not cancel the allocation — it is shared, and the other half of this smoke test
+may still be using it.

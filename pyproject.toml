@@ -91,9 +91,11 @@ notebook_src_dirs = ["slurm_agent", "docs"]
 # deliverable (experiment notebooks). Their outputs survive nb / sync / clean, and
 # `juplit check` fails if they stop matching the .py that produced them.
 # Remember to un-ignore each one in .gitignore — see the comment there.
-# None. A session's record belongs in the repo the agents worked on, alongside the
-# experiment it is about — this control plane commits no notebooks of its own.
-artifact_notebooks = []
+# A session's record belongs in the repo the agents worked on, alongside the experiment it
+# is about, so no session notebook is listed here. The quick start is the one exception and
+# a different kind of thing: it is not a record of an experiment, it is the setup procedure
+# for this repo, and its outputs are what tell you a fresh clone actually works.
+artifact_notebooks = ["docs/quickstart.py"]
 
 [tool.jupytext]
 formats = "ipynb,py:percent"

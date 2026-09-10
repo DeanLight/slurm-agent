@@ -18,6 +18,12 @@ dropped `ControlMaster` after a network change. If it fails on `cluster identity
 On a fresh clone, `poe init` instead — it creates the footprint and finishes by really
 sending a test notification, so setup ends in a proof.
 
+`poe hc` proves the wiring. `docs/quickstart.ipynb` proves the wiring **carries an agent**:
+it puts one interactive and one batch smoke agent on the same allocation, each capped at
+`$1` by `agents/smoke.yaml`, and both push to a throwaway PR. Reach for it when a real
+launch fails in a way that could be the machinery rather than the task — it separates the
+two for about a dollar and two minutes.
+
 ## Getting compute
 
 ```bash
@@ -50,6 +56,12 @@ GPU-hour not spent — read the message, fix the named thing, re-run.
 
 Prefer **batch** whenever a human does not need a shell on the node. A batch job ends when
 the agent's process exits, so nothing can be left holding GPUs.
+
+Which brief an agent gets is its own declared property — `prompt:` in `agents/<kind>.yaml`,
+a template in `prompts/`. That is why the same launcher can carry a twelve-hour experiment
+agent and a two-minute smoke agent. Every brief takes the same variables; rendering uses
+`StrictUndefined`, so one that reaches for a variable the launcher does not pass fails in
+the test suite rather than after the allocation is up.
 
 ## Following a run
 

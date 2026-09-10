@@ -1,0 +1,54 @@
+# The batch half of the smoke test. Identical to `smoke.yaml` in every way that costs
+# money, and different in the two that matter here: it declares `mode: batch`, and it gets
+# its OWN workdir.
+#
+# The separate workdir is not tidiness. Two agents of the same kind share one staged
+# checkout, and `stage()` refuses to launch onto a dirty tree — so a second run starting
+# while the first still has an uncommitted notebook is refused, and a `git checkout -B`
+# from either would yank the branch out from under the other. Giving the two halves
+# separate trees is what lets them overlap at all.
+#
+# It is a real agent by every measure the orchestrator cares about — it stages a repo,
+# reports rounds through the shim, is watched by the same hooks and killed by the same
+# rules — and it is deliberately the smallest such thing that can exist. `poe hc` proves
+# the wiring; this proves the wiring *carries an agent*.
+#
+# Nothing here is a secret. `requires_env` is empty on purpose: a sanity check that needs
+# a token has two ways to fail, and you learn less from either.
+repo: DeanLight/juplit_template
+# The throwaway branch both smoke runs push to, so one PR shows both. docs/quickstart
+# creates it, and you never merge it.
+ref: slurm-agent-smoke
+workdir: ~/work/slurm-agent-smoke-batch
+
+# Each run gets its own directory under here — `{EXP_ID}` is the launch's `--exp-id`, so
+# the interactive and batch halves cannot collide on the same notebook.
+log_dir: smoke/{EXP_ID}
+
+# A smoke test that needs a credential has two ways to fail.
+requires_env: []
+
+# The small brief, not the experiment brief: no Notion, no exploration, five steps.
+prompt: smoke.md.jinja
+
+skills: []
+mcp: []
+
+allowed_tools:
+  - Read
+  - Write
+  - Edit
+  - "Bash(git *)"
+  - "Bash(python3 *)"
+  - "Bash(nvidia-smi *)"
+  - "Bash(mkdir *)"
+  - "Bash(date *)"
+
+# Two minutes of work. If this ever approaches a dollar, something is wrong and the cap is
+# the thing that tells you.
+max_budget_usd: 1
+
+mode: batch
+lease: "00:30:00"
+max_leases: 1
+batch_time: "00:30:00"
