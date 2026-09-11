@@ -71,6 +71,38 @@ def ssh_runner(host: str, *, timeout: int = 60) -> Runner:
     return run
 
 
+def local_runner(*, timeout: int = 60) -> Runner:
+    """The same `Runner` shape, executing HERE instead of over ssh.
+
+    Some things are true of the laptop and of the login node and must be checked on both —
+    whether git can authenticate to GitHub, most of all. Giving the local side the same
+    shape means one checker covers both machines, and one dict-backed fake stands in for
+    either in tests.
+    """
+
+    def run(command: str, stdin: str | None = None) -> str:
+        try:
+            done = subprocess.run(command, shell=True, capture_output=True, text=True,
+                                  timeout=timeout, input=stdin)
+        except subprocess.TimeoutExpired as exc:
+            raise RemoteError(command, f"timed out after {timeout}s") from exc
+        if done.returncode != 0:
+            raise RemoteError(command, done.stderr.strip(), done.returncode)
+        return done.stdout
+
+    return run
+
+
+# %%
+if test():
+    assert local_runner()("echo hello").strip() == "hello"
+    try:
+        local_runner()("exit 3")
+        raise AssertionError("a non-zero exit must raise, exactly as over ssh")
+    except RemoteError as exc:
+        assert exc.returncode == 3
+
+
 # %%
 if test():
     # Assert the argv we would run, without needing a cluster: the closure is the unit

@@ -103,6 +103,20 @@ Tillicum's filesystem is shared, and a 0644 app password is the real exposure he
 agent that declares no keys says `declares no keys — nothing needed here` instead, and
 there is nothing to copy for it.
 
+## GitHub credentials, on both machines
+
+Agents push from the compute node, so the cluster needs its own credential (`gh auth
+login` there, or a PAT in git's credential store). Your laptop needs one too. `poe hc`
+checks both — look for the `github …` rows under each heading — because they are different
+credentials and only one of them is the one that matters at the moment it matters.
+
+`hc --full` adds a `--dry-run` push, which is the only thing that proves **write** access:
+`git ls-remote` succeeds on a public repo with no credential at all. The dry run
+authenticates, is authorised by the server, and then writes nothing.
+
+A staged repo reading `not cloned yet` is not a problem. A workdir is created by the first
+`poe agent-run`/`agent-batch`, not by setup.
+
 ## Authenticating Claude on the cluster
 
 Remote agents run under your Claude subscription, logged in on Tillicum:

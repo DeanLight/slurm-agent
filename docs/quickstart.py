@@ -264,6 +264,8 @@ sh("uv run poe hc")
 #
 # Read it by group. `MISSING` under `this laptop` is something you fix here; under a
 # `staged repo · …` heading it is something you fix over ssh, at the path in the heading.
+# A staged repo reading `not cloned yet` is **not** a problem — a workdir is created by the
+# first launch, not by setup.
 # A `SKIPPED` row is never a pass — if the login node is unreachable, everything behind it
 # is skipped rather than failed, so that one broken link does not read as eight problems.
 #
@@ -327,18 +329,22 @@ else:
     print(f"open it here: {SMOKE_URL}/compare/{smoke.ref}?expand=1")
 
 # %% [markdown]
-# ### One precondition this repo cannot check for you
+# ### Git credentials, on both machines
 #
 # The agents push **from the compute node**, so the cluster needs its own credential for
-# that repo — `gh auth login` on the login node, or a PAT in git's credential store.
-# Nothing above proves that; the read below only proves the repo is reachable.
+# the repo — `gh auth login` there, or a PAT in git's credential store. Your laptop needs
+# one too, for the branch cell above.
 #
-# If the credential is missing, you will not silently lose the run: step 4 of the smoke
-# brief tells the agent to report `needs_human` on a rejected push rather than work around
-# it, and `poe agent-status` will show it waiting.
-
-# %%
-sh(f"ssh tillicum-login 'git ls-remote --heads {SMOKE_URL} | head -3'")
+# `poe hc` checks both, because they are different credentials and only one of them is the
+# one that matters at the moment it matters: the laptop's you notice immediately, the login
+# node's decides whether an agent can push the notebook a GPU-hour produced. Look for the
+# `github …` rows under each heading. `hc --full` adds a `--dry-run` push, which is the
+# only thing that actually proves **write** access — `ls-remote` succeeds on a public repo
+# with no credential at all.
+#
+# And if it is missing anyway, you do not silently lose the run: step 4 of the smoke brief
+# tells the agent to report `needs_human` on a rejected push rather than work around it,
+# and `poe agent-status` shows it waiting.
 
 # %% [markdown]
 # ## 5. One allocation
@@ -491,6 +497,8 @@ sh("uv run poe flush --older-than 0d --dry-run")
 #
 # | Proved | How |
 # |---|---|
+# | Git can reach the repo from both machines | the `github …` rows, on the laptop and the login node |
+# | It can **push**, not just read | `hc --full`'s `--dry-run` push probe |
 # | The local footprint is real | `poe init` created `.envrc` at 0600 and appended ssh hosts without clobbering |
 # | Every declared key is filled | `poe hc` reads names from YAML, values from `.envrc` |
 # | You can be reached | `--send` really delivered, from the laptop **and** from Tillicum |
@@ -501,6 +509,8 @@ sh("uv run poe flush --older-than 0d --dry-run")
 # | The batch path works end to end | `SMOKE-batch` queued, ran, and ended itself |
 # | Progress and spend are visible from here | `agent-status`, `agent-logs --cells`, `status` |
 # | The supervisor decides and records | `agent-watch --once` |
+#
+# The only thing left that `hc` still cannot see is what an agent does with all of that.
 #
 # It did **not** prove that a kill or a lease renewal works — the smoke agents finish in
 # two minutes, long before any threshold fires — nor that a real experiment agent's
@@ -515,5 +525,7 @@ sh("uv run poe flush --older-than 0d --dry-run")
 # | `notify send (tillicum)` MISSING | The cluster-side `.envrc` — mode and keys, not the laptop's. |
 # | `agent credential` MISSING | `ssh tillicum-login` and run `claude` once, interactively. |
 # | Launch refuses: dirty workdir | Something wrote inside the staged repo. Nothing this repo writes should. |
-# | Agent stuck at `needs_human` | `poe agent-status` names what it is waiting on — usually the cluster's git credential. |
+# | Agent stuck at `needs_human` | `poe agent-status` names what it is waiting on. |
+# | `github …` MISSING | That machine has no git credential for the repo. `gh auth login` there, or a PAT in git's credential store. |
+# | `github … push` MISSING | It can read but not write. The credential needs the repo scope. |
 # | Batch job never leaves `PENDING` | `poe status`. The queue is the queue; that is not a failure. |

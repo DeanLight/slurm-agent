@@ -39,6 +39,12 @@ an agent. That rule is what makes a closed laptop lossless and two sessions agre
   that repo's. A `Check` carries `where`, `render` groups by it, and a row that cannot say
   which machine it means is a bug — asking the laptop for an agent's `HF_TOKEN` failed a
   correctly-configured machine and sent people to fill in a file nothing reads.
+- **Git auth is checked on both machines, and staging is not setup.** The laptop and the
+  login node hold different GitHub credentials, and the login node's is the one that
+  decides whether an agent can push the notebook a GPU-hour produced — so `hc` asks both,
+  and `--full` adds a `--dry-run` push, because `ls-remote` succeeds on a public repo with
+  no credential at all. A workdir, by contrast, is created by the first *launch*: "not
+  cloned yet" is the normal state of a fresh clone and must never render as a fault.
 - **A key is required because something reads it, never because a list says so.** Which
   notification keys the laptop needs is derived from `config/notify.yaml`'s `channels` via
   `notify.CHANNEL_KEYS`, which the senders themselves read through. `manager.requires_env`

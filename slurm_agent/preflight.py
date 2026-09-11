@@ -54,7 +54,7 @@ from slurm_agent.config import (
     missing_env,
 )
 from slurm_agent.notify import NotifyConfig
-from slurm_agent.remote import Runner, RemoteError, remote_path
+from slurm_agent.remote import Runner, RemoteError, local_runner, quote, remote_path
 
 log = structlog.get_logger(__name__)
 
@@ -509,7 +509,8 @@ def healthcheck(cluster: ClusterConfig, manager: ManagerConfig,
                 agents: dict[str, AgentConfig], run: Runner, *, full: bool = False,
                 send: bool = False, envrc: Path | None = None,
                 env: dict[str, str] | None = None, ssh_dir: Path | None = None,
-                notify: "NotifyConfig | None" = None, notify_test=None) -> list[Check]:
+                notify: "NotifyConfig | None" = None, notify_test=None,
+                local: Runner | None = None) -> list[Check]:
     """Is everything wired and working? FAST tier by default; `--full` adds the slow proofs.
 
     Every row carries the place it is about, and the three places do not share keys or
@@ -555,6 +556,12 @@ def healthcheck(cluster: ClusterConfig, manager: ManagerConfig,
     ))
     checks.append(_ssh_config_check(ssh_dir, cluster))
 
+    # Git auth, from HERE. The two machines hold different credentials, and the laptop's
+    # is the one you will notice — the login node's is the one that decides whether an
+    # agent can push the notebook a GPU-hour produced.
+    repos = sorted({a.repo for a in agents.values()})
+    checks.extend(_github_access(local or local_runner(), repos, LAPTOP, push=full))
+
     # ── FAST · the login node ────────────────────────────────────────────────────
     try:
         who = run("id -un").strip()
@@ -573,6 +580,9 @@ def healthcheck(cluster: ClusterConfig, manager: ManagerConfig,
         # One broken link must not render as eight independent problems.
         checks.append(Check(name="run root", ok=None, where=login,
                             detail="skipped: login node unreachable"))
+        for repo in repos:
+            checks.append(Check(name=f"github {repo}", ok=None, where=login,
+                                detail="skipped: login node unreachable"))
         for kind, agent in agents.items():
             checks.append(Check(name=".envrc", ok=None,
                                 where=staged_repo(cluster, kind, agent),
@@ -581,6 +591,7 @@ def healthcheck(cluster: ClusterConfig, manager: ManagerConfig,
         checks.append(_remote_exists(run, cluster.run_root, "run root", where=login))
         if cluster.allocation_mode == "tmux":
             checks.append(_tmux(run, where=login))
+        checks.extend(_github_access(run, repos, login, push=full))
         # ── FAST · each staged repo ──────────────────────────────────────────────
         checks.extend(_remote_envrc(run, cluster, agents))
 
@@ -660,6 +671,78 @@ def _remote_exists(run: Runner, path: str, name: str, *, where: str = LAPTOP) ->
                  fix="poe init" if not present else None)
 
 
+def _github_access(runner: Runner, repos: list[str], where: str, *,
+                   push: bool = False) -> list[Check]:
+    """Can git reach and authenticate to each repo FROM HERE — wherever "here" is.
+
+    This has to be asked of both machines, because they hold different credentials and
+    only one of them is the one that matters at the moment it matters. The laptop's is
+    what you notice immediately; the login node's is what an agent needs at the end of a
+    GPU-hour, to push the notebook that was the whole point of the run.
+
+    `ls-remote` proves read and authentication. On a PUBLIC repo it succeeds with no
+    credential at all, so it cannot prove push — and the row says so rather than implying
+    a guarantee it does not have. `push=True` adds the real thing: a `--dry-run` push,
+    which authenticates and is authorised by the server and then writes nothing.
+    """
+    checks = []
+    for repo in repos:
+        url = f"https://github.com/{repo}.git"
+        name = f"github {repo}"
+        try:
+            out = runner("GIT_TERMINAL_PROMPT=0 GIT_ASKPASS=true "
+                         f"git ls-remote --heads {quote(url)} 2>&1 | head -3")
+        except RemoteError as exc:
+            checks.append(Check(name=name, ok=False, where=where, detail=str(exc)[:160],
+                                fix=f"authenticate git to github here: `gh auth login`, "
+                                    f"or a PAT in git's credential store"))
+            continue
+        refs = [line for line in out.splitlines() if "\trefs/" in line]
+        if not refs:
+            checks.append(Check(
+                name=name, ok=False, where=where,
+                detail=out.strip()[:160] or "no refs and no error — git said nothing",
+                fix="authenticate git to github here: `gh auth login`, or a PAT in git's "
+                    "credential store"))
+            continue
+        checks.append(Check(name=name, ok=True, where=where,
+                            detail=f"readable, {len(refs)} branches "
+                                   "[dim](read only — a public repo answers this without "
+                                   "a credential)[/]"))
+        if push:
+            checks.append(_push_probe(runner, url, repo, where))
+    return checks
+
+
+def _push_probe(runner: Runner, url: str, repo: str, where: str) -> Check:
+    """Prove WRITE access without writing: an authorised `--dry-run` push.
+
+    An agent that cannot push has done its whole run for nothing, and read access does not
+    imply write. `--dry-run` performs the connection, the authentication and the server's
+    authorisation, then stops before sending a single object — so this is the real answer
+    and it still creates no branch.
+    """
+    probe = ("tmp=$(mktemp -d) && git -C \"$tmp\" init -q "
+             "&& git -C \"$tmp\" -c user.email=probe@localhost -c user.name=probe "
+             "commit -q --allow-empty -m probe "
+             "&& GIT_TERMINAL_PROMPT=0 GIT_ASKPASS=true git -C \"$tmp\" push --dry-run "
+             f"{quote(url)} HEAD:refs/heads/slurm-agent-push-probe 2>&1 | tail -3; "
+             "rm -rf \"$tmp\"")
+    name = f"github {repo} push"
+    try:
+        out = runner(probe)
+    except RemoteError as exc:
+        out = str(exc)
+    denied = any(word in out.lower() for word in
+                 ("denied", "403", "not authorized", "authentication", "could not read"))
+    return Check(name=name, ok=not denied, where=where,
+                 detail="write access confirmed [dim](dry run — nothing was pushed)[/]"
+                 if not denied else out.strip()[:160],
+                 fix=None if not denied else
+                 f"grant this machine push access to {repo}: `gh auth login` with the "
+                 "repo scope, or a PAT in git's credential store")
+
+
 def _remote_envrc(run: Runner, cluster: ClusterConfig,
                   agents: dict[str, AgentConfig]) -> list[Check]:
     """Each staged repo's own `.envrc` on the cluster — mode and the keys IT declares.
@@ -673,6 +756,26 @@ def _remote_envrc(run: Runner, cluster: ClusterConfig,
     checks = []
     for kind, agent in agents.items():
         where = staged_repo(cluster, kind, agent)
+        workdir = remote_path(agent.workdir)
+
+        # Is it even there? A workdir is created by the FIRST launch, not by setup — so
+        # "not cloned yet" is the normal state of a fresh clone and must not read as a
+        # fault. Saying nothing about it was worse: the .envrc row told you to scp a file
+        # into a directory that did not exist.
+        state = run(f"test -d {workdir}/.git && echo repo "
+                    f"|| {{ test -e {workdir} && echo other || echo absent; }}").strip()
+        if state == "absent":
+            checks.append(Check(
+                name="clone", ok=True, where=where,
+                detail="not cloned yet — the first `poe agent-run`/`agent-batch` clones it"))
+        elif state == "other":
+            checks.append(Check(
+                name="clone", ok=False, where=where,
+                detail=f"{agent.workdir} exists but is not a git repo",
+                fix=f"move it aside, or point workdir elsewhere in agents/{kind}.yaml"))
+        else:
+            checks.extend(_staged_clone(run, cluster, agent, kind, workdir, where))
+
         if not agent.requires_env:
             checks.append(Check(name=".envrc", ok=True, where=where,
                                 detail="declares no keys — nothing needed here"))
@@ -683,8 +786,9 @@ def _remote_envrc(run: Runner, cluster: ClusterConfig,
             checks.append(Check(
                 name=".envrc", ok=False, where=where,
                 detail=f"{path} missing — needs {', '.join(agent.requires_env)}",
-                fix=f"scp templates/envrc.example {cluster.login_host}:{path} "
-                    f"&& ssh {cluster.login_host} 'chmod 600 {path}' then fill it in"))
+                fix=(f"ssh {cluster.login_host} 'mkdir -p {agent.workdir}' first if it is "
+                     f"not cloned yet, then scp templates/envrc.example "
+                     f"{cluster.login_host}:{path} && chmod 600 it there")))
             continue
         secure = mode.endswith("00")
         absent = missing_env_remote(agent, run)
@@ -696,6 +800,36 @@ def _remote_envrc(run: Runner, cluster: ClusterConfig,
             f"ssh {cluster.login_host} 'chmod 600 {path}' and fill in the keys",
         ))
     return checks
+
+
+def _staged_clone(run: Runner, cluster: ClusterConfig, agent: AgentConfig, kind: str,
+                  workdir: str, where: str) -> list[Check]:
+    """A clone that IS there: does it point at the configured repo, and is it clean?
+
+    Both matter before a launch rather than during one. A workdir left pointing at an
+    older `repo:` silently stages the wrong code, and `stage()` refuses a dirty tree — so
+    a `poe hc` that did not mention it sends you to a GPU-hour that gets refused instead.
+    """
+    origin = run(f"git -C {workdir} remote get-url origin 2>/dev/null || echo none").strip()
+    matches = agent.repo in origin
+    rows = [Check(
+        name="clone", ok=matches, where=where,
+        detail=f"cloned from {origin}" if matches
+        else f"cloned from {origin}, but agents/{kind}.yaml says {agent.repo}",
+        fix=None if matches else
+        f"ssh {cluster.login_host} 'rm -rf {agent.workdir}' and let the next launch "
+        f"re-clone it, or fix repo: in agents/{kind}.yaml")]
+
+    dirty = [ln[3:] for ln in
+             run(f"git -C {workdir} status --porcelain").splitlines() if ln.strip()]
+    rows.append(Check(
+        name="worktree", ok=not dirty, where=where,
+        detail="clean" if not dirty
+        else f"{len(dirty)} uncommitted: {', '.join(dirty[:4])}",
+        fix=None if not dirty else
+        f"commit or clean it on {cluster.login_host} — a launch refuses a dirty tree, and "
+        "this never stashes for you"))
+    return rows
 
 
 def _allocation_probe(run: Runner, cluster: ClusterConfig) -> Check:
@@ -875,8 +1009,14 @@ if test():
             repo="DeanLight/baselines", ref="main", workdir="~/work/baselines",
             log_dir="experiments", max_budget_usd=8, requires_env=["HF_TOKEN"])}
         runner = FakeRunner({"id -un": "d\n", "test -d": "yes", "stat -c": "600\n",
+                             "ls-remote": "abc\trefs/heads/main\n", "remote get-url": "x\n",
+                             "status --porcelain": "",
                              "cat": "export HF_TOKEN=real\n", "test -f": "yes"})
-        rows = healthcheck(cluster, manager, hungry, runner, envrc=envrc, env=good_env)
+        # `local` is injected, so the suite never reaches the network: the git-auth rows
+        # run HERE by default, and a test that silently called out to github would be
+        # slow, flaky offline, and dependent on whoever is logged in.
+        rows = healthcheck(cluster, manager, hungry, runner, envrc=envrc, env=good_env,
+                           local=FakeRunner({"ls-remote": "abc\trefs/heads/main\n"}))
         mine = next(c for c in rows if c.name == "my keys")
         assert mine.ok, "the laptop has every key IT needs; an agent's key is not one"
         # …but the report still says where HF_TOKEN is expected instead.
@@ -917,3 +1057,56 @@ if test():
         sends = [c for c in sent if c.name == "notify send"]
         assert {c.where for c in sends} == {LAPTOP, login_node(cluster)}
         assert all(c.ok for c in sends)
+
+
+# %%
+if test():
+    # Git auth is asked of BOTH machines. Read access is all `ls-remote` can prove, and the
+    # row must not imply more — a public repo answers it with no credential at all.
+    ok_rows = _github_access(FakeRunner({"ls-remote": "a\trefs/heads/main\nb\trefs/heads/x\n"}),
+                             ["DeanLight/slurm-agent"], LAPTOP)
+    assert len(ok_rows) == 1 and ok_rows[0].ok
+    assert "2 branches" in ok_rows[0].detail and "read only" in ok_rows[0].detail
+
+    denied = _github_access(FakeRunner({"ls-remote": "remote: Repository not found.\n"}),
+                            ["DeanLight/private"], LAPTOP)
+    assert denied[0].ok is False and "gh auth login" in denied[0].fix
+    display(render(ok_rows + denied))
+
+
+# %%
+if test():
+    # `--full` adds the question that actually matters for an agent: can it PUSH? A run
+    # that cannot push has spent its GPU-hour for nothing, and read access does not imply
+    # write. The probe is a dry run, so it authorises and then writes nothing.
+    pushy = FakeRunner({"ls-remote": "a\trefs/heads/main\n",
+                        "push --dry-run": "To github.com\n * [new branch] HEAD -> probe\n"})
+    rows = _github_access(pushy, ["DeanLight/slurm-agent"], LAPTOP, push=True)
+    assert [r.ok for r in rows] == [True, True]
+    assert "nothing was pushed" in rows[1].detail
+    assert pushy.asked("--dry-run")
+
+    refused = FakeRunner({"ls-remote": "a\trefs/heads/main\n",
+                          "push --dry-run": "remote: Permission to x denied to y.\n"})
+    rows = _github_access(refused, ["DeanLight/slurm-agent"], LAPTOP, push=True)
+    assert rows[1].ok is False and "denied" in rows[1].detail
+
+
+# %%
+if test():
+    # A workdir is created by the first LAUNCH, not by setup. "Not cloned yet" is the
+    # normal state of a fresh clone and must not read as a fault — while a clone pointing
+    # at the wrong repo, or a dirty one, must, because both stop or spoil the next launch.
+    agent_cfg = AgentConfig(repo="DeanLight/slurm-agent", ref="main", workdir="~/work/x",
+                            log_dir="e", max_budget_usd=1)
+    fresh = FakeRunner({"test -d": "absent\n", "stat -c": "none\n"})
+    rows = {c.name: c for c in _remote_envrc(fresh, cluster, {"k": agent_cfg})}
+    assert rows["clone"].ok and "not cloned yet" in rows["clone"].detail
+
+    wrong = FakeRunner({"test -d": "repo\n", "remote get-url": "https://github.com/other/y\n",
+                        "status --porcelain": " M a.py\n M b.py\n", "stat -c": "none\n"})
+    rows = {c.name: c for c in _remote_envrc(wrong, cluster, {"k": agent_cfg})}
+    assert rows["clone"].ok is False and "agents/k.yaml says" in rows["clone"].detail
+    # A dirty tree is reported HERE, not discovered when the launch refuses it.
+    assert rows["worktree"].ok is False and "2 uncommitted" in rows["worktree"].detail
+    display(render(list(rows.values())))
