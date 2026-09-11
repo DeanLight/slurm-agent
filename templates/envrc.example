@@ -29,8 +29,12 @@ SLURM_AGENT_SMTP_PASSWORD=<secret-here>
 # Do not want Slack? Drop this key from config/manager.yaml as well.
 SLURM_AGENT_SLACK_WEBHOOK=<secret-here>
 
-# ── declared by agents/*.yaml · read on the CLUSTER, in the staged repo ────────
-# Not read on your laptop. `poe init` comments these out in the copy it writes there,
-# and names the remote path each one belongs in instead.
-HF_TOKEN=<secret-here>
-OPENAI_BASE_URL=<secret-here>
+# ── declared by agents/*.yaml · read on the CLUSTER, in the staged repo ───────
+# The agents shipped here declare no keys, so there is nothing live below. When one of
+# yours does, add the key here — and note that it is read in the `.envrc` beside that
+# agent's `workdir` on the cluster, never on your laptop. `poe init` writes the laptop's
+# copy with any such key COMMENTED OUT and the remote path beside it, and `poe hc` checks
+# it over there and prints that path. For example:
+#
+# HF_TOKEN=<secret-here>
+# OPENAI_BASE_URL=<secret-here>

@@ -1,18 +1,31 @@
 # The reference agent: runs an experiment matrix and writes it up as an artifact notebook.
 #
+# ── THIS IS A PLACEHOLDER — repoint it ────────────────────────────────────────
+# `repo`, `ref` and `workdir` below point at THIS repo, so a fresh fork names nothing you
+# cannot clone and `poe hc` is green before you have configured anything. It is not a
+# useful experiment target. Point it at your experiment repo, on a branch you are willing
+# to let an agent push to.
+#
 # This file is the audit surface. Reviewing what this agent was allowed to do means
 # reading it — no value here is a secret, only the NAMES of the keys it needs.
-repo: DeanLight/deepreasoner-baselines
-ref: claude/exp14-decomp-longdoc
-workdir: ~/work/deepreasoner-baselines
+repo: DeanLight/slurm-agent
+ref: main
+workdir: ~/work/slurm-agent-experiment-example
 # The experiment log DIRECTORY. The agent continues an existing notebook here
 # or starts a new one; the status hook reports whichever it is working in.
 log_dir: experiments/{EXP_ID}
 
 # Checked BEFORE launch, so a missing token costs a refusal instead of a GPU-hour.
-requires_env:
-  - HF_TOKEN
-  - OPENAI_BASE_URL
+#
+# Empty here on purpose: a placeholder agent that demands a token makes a fresh fork fail
+# its healthcheck on a key it has no use for yet. A real experiment agent declares what it
+# needs, and those keys are read ON THE CLUSTER — in the `.envrc` beside `workdir`, never
+# on your laptop. `poe hc` checks them there and prints the path. For example:
+#
+#   requires_env:
+#     - HF_TOKEN
+#     - OPENAI_BASE_URL
+requires_env: []
 
 skills: [experiment-execution, juplit-programming]
 mcp: [notion, github]

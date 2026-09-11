@@ -72,6 +72,12 @@
 # and it stops managing that repo. `poe init` prints the list before it does anything, and
 # the next cell prints it on its own.
 #
+# **Every agent shipped here points at this repo**, on purpose. A fork should be able to
+# run its whole sanity check without access to anything else, and the one repo a fork can
+# always clone and push to is itself. `agents/experiment-runner.yaml` is a placeholder in
+# exactly that sense — repoint its `repo`, `ref` and `workdir` at your experiment repo
+# when you have one. The two smoke agents are meant to stay pointed here.
+#
 # ## What it will cost
 #
 # One GPU for well under an hour, and two agents capped at `$1` each by
@@ -110,8 +116,11 @@ def sh(cmd: str, *, timeout: int = 900, quiet: bool = False) -> subprocess.Compl
     """Run a shell command at the repo root. Prints what happened; never raises."""
     print(f"$ {cmd}\n")
     try:
+        # COLUMNS, because `poe` output is captured rather than attached to a terminal:
+        # rich would otherwise fall back to 80 and fold the report's tables.
         p = subprocess.run(cmd, shell=True, cwd=ROOT, timeout=timeout,
-                           capture_output=True, text=True)
+                           capture_output=True, text=True,
+                           env={**os.environ, "COLUMNS": "110"})
     except subprocess.TimeoutExpired:
         print(f"!! timed out after {timeout}s — is the ssh session to the login node "
               "still open?")
@@ -138,7 +147,7 @@ from slurm_agent.config import ClusterConfig, ManagerConfig, load, load_agents  
 cluster = load("config/cluster.yaml", ClusterConfig)
 manager = load("config/manager.yaml", ManagerConfig)
 agent_configs = load_agents()
-print(preflight.inventory(cluster, manager, agent_configs))
+preflight.print_inventory(cluster, manager, agent_configs)
 
 # %% [markdown]
 # ## 1. `poe init` — create the local footprint
@@ -445,8 +454,10 @@ else:
     print(f"look here: {SMOKE_URL}/compare/{smoke.ref}?expand=1")
 
 # %% [markdown]
-# **Close it without merging.** If you merged it you would be committing two throwaway
-# notebooks into a template repo.
+# **Close it without merging.** The smoke agents stage **this repo** — the one repo a fork
+# is always allowed to clone and push to, which is why the sanity check targets it rather
+# than something of mine you might not have access to. Merging would commit two throwaway
+# notebooks into your own control plane.
 
 # %% [markdown]
 # ## 11. Tear down

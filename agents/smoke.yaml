@@ -7,9 +7,14 @@
 #
 # Nothing here is a secret. `requires_env` is empty on purpose: a sanity check that needs
 # a token has two ways to fail, and you learn less from either.
-repo: DeanLight/juplit_template
+repo: DeanLight/slurm-agent
 # The throwaway branch both smoke runs push to, so one PR shows both. docs/quickstart
 # creates it, and you never merge it.
+#
+# The target is THIS repo, deliberately: a fork should be able to run its own sanity
+# check without needing access to anything else, and the one repo a fork is certain to
+# be able to clone and push to is itself. Nothing the smoke agent writes touches the
+# control plane's own files — it commits one notebook under smoke/ and stops.
 ref: slurm-agent-smoke
 workdir: ~/work/slurm-agent-smoke
 

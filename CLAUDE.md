@@ -42,6 +42,11 @@ an agent. That rule is what makes a closed laptop lossless and two sessions agre
 - **`agents/*.yaml` IS the list of managed repos.** One file per agent, naming repo, ref and
   workdir. That is the whole registry, and it follows from the one rule: nothing is
   remembered between runs, so delete the file and the repo is no longer managed.
+- **Every shipped agent points at this repo and declares no keys.** They are examples, and
+  a fork must not inherit a config naming a repo it cannot clone or a token it has no use
+  for — either turns a correctly-set-up laptop red with no fix available to its owner. The
+  one repo a fork can always clone and push to is itself. Two tests pin this; declare keys
+  and real repos on an agent you actually run, not on the examples.
 
 ## Working here
 

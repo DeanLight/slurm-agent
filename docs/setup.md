@@ -36,6 +36,13 @@ nothing else. Each file names a repo, a ref and the workdir it is staged into â€
 whole list. No registry, nothing remembered between runs; delete a file and it stops
 managing that repo. `poe init` prints the list before doing anything.
 
+**Every shipped agent points at this repo and declares no keys**, so a fresh clone or fork
+is green once you have filled in your own SMTP and Slack keys, with nothing staged yet.
+`agents/experiment-runner.yaml` is a placeholder in that sense â€” repoint its `repo`, `ref`
+and `workdir` at your experiment repo, and declare what it needs there. The two smoke
+agents are meant to stay pointed here: the sanity check should not depend on access to
+anything but this repo.
+
 `poe init` **appends** its hosts to `~/.ssh/config` between markers, and skips entirely if
 you have already defined `tillicum-login` yourself. Your other clusters and servers are
 never touched, and nothing there is overwritten.

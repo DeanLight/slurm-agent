@@ -55,8 +55,12 @@ def test_envrc_is_gitignored():
     assert any(re.fullmatch(r"\.envrc/?", line.strip()) for line in ignored)
 
 
+def _agents_by_kind() -> dict[str, AgentConfig]:
+    return {p.stem: load(p, AgentConfig) for p in sorted((ROOT / "agents").glob("*.yaml"))}
+
+
 def _agents() -> list[AgentConfig]:
-    return [load(p, AgentConfig) for p in sorted((ROOT / "agents").glob("*.yaml"))]
+    return list(_agents_by_kind().values())
 
 
 def test_every_agent_brief_exists_and_renders():
@@ -108,3 +112,27 @@ def test_the_two_smoke_halves_share_a_branch_but_not_a_tree():
     assert (a.repo, a.ref) == (b.repo, b.ref)
     assert a.workdir != b.workdir
     assert (a.mode, b.mode) == ("interactive", "batch")
+
+
+def test_every_shipped_agent_points_at_this_repo():
+    """A fork must not inherit a config naming a repo it cannot clone.
+
+    Every `agents/*.yaml` here is an example. If one pointed at a private repo of mine,
+    a fresh fork's `poe hc` would fail on a staged repo it has no access to and no way to
+    fix — and the fix would be to know what my repo was. The one repo a fork is always
+    allowed to clone and push to is itself, so that is where the examples point.
+    """
+    for kind, agent in _agents_by_kind().items():
+        assert agent.repo == "DeanLight/slurm-agent", (
+            f"agents/{kind}.yaml points at {agent.repo} — a fork cannot use that")
+
+
+def test_shipped_agents_need_no_credentials():
+    """A fresh fork is green once its OWN keys are filled, with nothing staged yet.
+
+    An example agent that declares `HF_TOKEN` turns a correctly-set-up laptop red on a key
+    it has no use for, in a cluster-side file it has no reason to have created yet. Declare
+    keys on an agent you actually run, not on the examples.
+    """
+    for kind, agent in _agents_by_kind().items():
+        assert agent.requires_env == [], f"agents/{kind}.yaml declares keys a fork lacks"

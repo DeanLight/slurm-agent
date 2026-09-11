@@ -10,6 +10,7 @@ dependencies = [
     "juplit>=0.1.0",
     "pydantic>=2.6",
     "pyyaml>=6.0",
+    "rich>=15.0.0",
     "structlog>=24.1",
 ]
 

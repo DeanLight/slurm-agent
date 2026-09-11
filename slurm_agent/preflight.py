@@ -27,6 +27,7 @@
 #   `ControlMaster`, and that is a one-second check.
 
 # %%
+import io
 import os
 import re
 import shutil
@@ -34,6 +35,11 @@ import stat
 from pathlib import Path
 
 import structlog
+from rich import box
+from rich.console import Console, Group
+from rich.table import Table
+from rich.tree import Tree
+from rich.text import Text
 from IPython.display import display
 from juplit import test
 from pydantic import BaseModel, ConfigDict
@@ -85,9 +91,14 @@ def login_node(cluster: ClusterConfig) -> str:
 
 
 def staged_repo(cluster: ClusterConfig, kind: str, agent: AgentConfig) -> str:
-    """The place-label for one agent's staged checkout, naming the file that declares it."""
-    return (f"staged repo · {cluster.login_host}:{agent.workdir}  "
-            f"[agents/{kind}.yaml → {agent.repo}@{agent.ref}]")
+    """The place-label for one agent's staged checkout, naming the file that declares it.
+
+    Square brackets are deliberately absent: these labels are rendered as rich markup, and
+    `[agents/x.yaml]` would be swallowed as a style tag — the heading would silently lose
+    the one piece of it that says which file to edit.
+    """
+    return (f"staged repo · agents/{kind}.yaml\n"
+            f"{cluster.login_host}:{agent.workdir} · {agent.repo}@{agent.ref}")
 
 
 class Check(BaseModel):
@@ -104,81 +115,132 @@ class Check(BaseModel):
     where: str = LAPTOP
 
 
-def render(checks: list[Check]) -> str:
-    """The report, grouped by place. A skipped row renders SKIPPED and never as ok."""
+MARKS = {True: ("[green]ok[/]", "ok"),
+         False: ("[bold red]MISSING[/]", "MISSING"),
+         None: ("[yellow]SKIPPED[/]", "SKIPPED")}
+
+
+def _console(**kwargs) -> Console:
+    return Console(**kwargs)
+
+
+def _export(renderable) -> str:
+    """The same renderable as plain text — for tests, logs, and anything not a terminal."""
+    buffer = io.StringIO()
+    _console(file=buffer, width=110, no_color=True, force_terminal=False,
+             highlight=False, soft_wrap=False).print(renderable)
+    return buffer.getvalue().rstrip("\n")
+
+
+def report(checks: list[Check]):
+    """One table per place, in the order the places were first seen.
+
+    Grouping is the whole point: a row that does not say which machine it is about sends
+    people to fix the wrong file. The place is a table title rather than a column, so it is
+    said once and cannot be missed, and an empty place still gets its heading.
+    """
     places: dict[str, list[Check]] = {}
     for check in checks:
         places.setdefault(check.where, []).append(check)
 
-    width = max((len(c.name) for c in checks), default=10)
-    lines = []
+    blocks = []
     for place, rows in places.items():
-        lines.append(f"{place}")
+        # The heading is its own block, not the table's `title`: a title is wrapped to the
+        # table's width, which is set by the content, so a long path would fold into
+        # nonsense while there was plenty of console to the right of it.
+        head, _, rest = place.partition("\n")
+        blocks.append(Text.from_markup(f"[bold cyan]{head}[/]"))
+        if rest:
+            blocks.append(Text.from_markup(f"[dim]{rest}[/]"))
+        table = Table(box=None, show_header=False, pad_edge=False, show_edge=False,
+                      expand=False, padding=(0, 1))
+        table.add_column("", width=8, justify="left")   # the mark
+        table.add_column("", style="bold", no_wrap=True)
+        table.add_column("", overflow="fold")
         for check in rows:
-            mark = "ok" if check.ok else ("SKIPPED" if check.ok is None else "MISSING")
-            lines.append(f"  {check.name:<{width}}  {mark:<8} {check.detail}")
+            detail = check.detail
             if check.ok is False and check.fix:
-                lines.append(f"  {'':<{width}}  {'':<8} fix: {check.fix}")
-        lines.append("")
+                detail += f"\n[dim]fix:[/] {check.fix}"
+            table.add_row(MARKS[check.ok][0], check.name, detail)
+        blocks.append(table)
+        blocks.append(Text(""))
+
     failed = sum(1 for c in checks if c.ok is False)
-    lines.append(f"{len(checks) - failed} ok, {failed} to fix" if failed
-                 else f"all {len(checks)} checks pass")
-    return "\n".join(lines)
+    skipped = sum(1 for c in checks if c.ok is None)
+    if failed:
+        tail = (f"[bold red]{failed} to fix[/], {len(checks) - failed - skipped} ok"
+                + (f", {skipped} skipped" if skipped else ""))
+    else:
+        tail = (f"[bold green]all {len(checks)} checks pass[/]" if not skipped
+                else f"[green]{len(checks) - skipped} ok[/], "
+                     f"[yellow]{skipped} skipped — a skip is not a pass[/]")
+    blocks.append(Text.from_markup(tail))
+    return Group(*blocks)
+
+
+def render(checks: list[Check]) -> str:
+    """The report as plain text. A skipped row renders SKIPPED and never as ok."""
+    return _export(report(checks))
+
+
+def print_report(checks: list[Check]) -> None:
+    """The report, in colour, to the terminal."""
+    _console().print(report(checks))
 
 
 def inventory(cluster: ClusterConfig, manager: ManagerConfig,
-              agents: dict[str, AgentConfig]) -> str:
-    """What this clone manages, and where each piece lives. Printed before anything runs.
+              agents: dict[str, AgentConfig]):
+    """What this clone manages, and where each piece lives. Shown before anything runs.
 
     This is the answer to "how does it know which repos it manages": it reads
-    `agents/*.yaml`, one file per agent, and nothing else. Add a file, and it manages
+    `agents/*.yaml`, one file per agent, and nothing else. Add a file and it manages
     another repo; there is no registry and nothing remembered between runs.
     """
-    lines = [
-        "This clone manages:",
-        f"  laptop           {Path.cwd()}",
-        f"                   .envrc here holds only YOUR keys, for reaching you:",
-        f"                   {', '.join(manager.requires_env) or 'none declared'}",
-        f"  login node       {cluster.login_host}",
-        f"                   run root {cluster.run_root} · allocations held in "
-        f"{cluster.allocation_mode}",
-    ]
+    tree = Tree("[bold]This clone manages[/]", guide_style="dim")
+
+    laptop = tree.add(f"[bold cyan]{LAPTOP}[/]  [dim]{Path.cwd()}[/]")
+    laptop.add(Text.from_markup(
+        "[dim].envrc here holds only YOUR keys, for reaching you:[/]\n"
+        + (", ".join(manager.requires_env) or "[dim]none declared[/]")))
+
+    login = tree.add(f"[bold cyan]the login node[/]  [dim]{cluster.login_host}[/]")
+    login.add(Text.from_markup(
+        f"[dim]run root[/] {cluster.run_root}\n"
+        f"[dim]allocations held in[/] {cluster.allocation_mode}\n"
+        "[dim]no .envrc lives here[/]"))
+
     if not agents:
-        lines.append("  staged repos     none — add an agents/<kind>.yaml to manage one")
-        return "\n".join(lines)
-    lines.append(f"  staged repos     {len(agents)}, one per agents/<kind>.yaml:")
+        tree.add("[bold cyan]staged repos[/]  [dim]none — add an agents/<kind>.yaml[/]")
+        return tree
+
+    staged = tree.add(f"[bold cyan]staged repos[/]  "
+                      f"[dim]{len(agents)}, one per agents/<kind>.yaml[/]")
     for kind, agent in agents.items():
-        keys = ", ".join(agent.requires_env) or "no keys"
-        lines.append(f"    agents/{kind}.yaml")
-        lines.append(f"      {agent.repo}@{agent.ref}")
-        lines.append(f"      staged at {cluster.login_host}:{agent.workdir}")
-        lines.append(f"      .envrc THERE needs: {keys}")
-    return "\n".join(lines)
+        node = staged.add(f"[bold]agents/{kind}.yaml[/]")
+        node.add(Text.from_markup(
+            f"{agent.repo}[dim]@[/]{agent.ref}\n"
+            f"[dim]staged at[/] {cluster.login_host}:{agent.workdir}\n"
+            f"[dim].envrc THERE needs:[/] "
+            + (", ".join(agent.requires_env) or "[dim]nothing[/]")))
+    return tree
+
+
+def render_inventory(cluster: ClusterConfig, manager: ManagerConfig,
+                     agents: dict[str, AgentConfig]) -> str:
+    """The inventory as plain text."""
+    return _export(inventory(cluster, manager, agents))
+
+
+def print_inventory(cluster: ClusterConfig, manager: ManagerConfig,
+                    agents: dict[str, AgentConfig]) -> None:
+    """The inventory, in colour, to the terminal."""
+    _console().print(inventory(cluster, manager, agents))
 
 
 # %%
 if test():
-    report = render([
-        Check(name="ssh config", ok=True, detail="~/.ssh/config has tillicum-login"),
-        Check(name="agent creds", ok=False, detail="no credential", fix="see docs/setup.md",
-              where="the login node · tillicum-login"),
-        Check(name="notify send", ok=None, detail="not attempted (--no-send)"),
-    ])
-    assert "MISSING" in report and "SKIPPED" in report
-    assert "1 to fix" in report
-    # A skipped proof must never read like a proof.
-    assert "notify send  ok" not in report
-    # Every row sits under a heading naming the machine it is about, so "what is missing"
-    # is never separable from "where".
-    assert LAPTOP in report and "the login node · tillicum-login" in report
-    assert report.index(LAPTOP) < report.index("ssh config")
-    display(report)
-
-
-# %%
-if test():
-    inv = inventory(ClusterConfig(login_host="tillicum-login"),
-                    ManagerConfig(requires_env=["SLURM_AGENT_SMTP_HOST"]), {
+    inv = render_inventory(ClusterConfig(login_host="tillicum-login"),
+                           ManagerConfig(requires_env=["SLURM_AGENT_SMTP_HOST"]), {
         "experiment-runner": AgentConfig(repo="DeanLight/baselines", ref="claude/exp14",
                                          workdir="~/work/baselines", log_dir="experiments",
                                          max_budget_usd=8, requires_env=["HF_TOKEN"]),

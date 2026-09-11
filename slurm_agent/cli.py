@@ -68,7 +68,7 @@ def _notify_test():
 def _report(checks) -> None:
     from slurm_agent import preflight
 
-    print(preflight.render(checks))
+    preflight.print_report(checks)
     raise SystemExit(1 if any(c.ok is False for c in checks) else 0)
 
 
@@ -93,14 +93,16 @@ def init(send: bool = True) -> None:
 
     cluster, manager, agents = _cluster(), _manager(), _agents()
     run = _runner()
+    from rich.console import Console
+    from rich.rule import Rule
+
+    console = Console()
     # What this clone manages, BEFORE anything is created — so the report that follows
     # reads as "this place, that place" rather than a flat list of unattributed failures.
-    print(preflight.inventory(cluster, manager, agents))
-    print()
-    print("Creating:")
-    print(preflight.render(preflight.init(cluster, manager, agents, run)))
-    print()
-    print("Checking:")
+    preflight.print_inventory(cluster, manager, agents)
+    console.print(Rule("[bold]Creating[/]", align="left", style="dim"))
+    preflight.print_report(preflight.init(cluster, manager, agents, run))
+    console.print(Rule("[bold]Checking[/]", align="left", style="dim"))
     _report(preflight.healthcheck(cluster, manager, agents, run, full=True, send=send,
                                   notify_test=_notify_test if send else None))
 

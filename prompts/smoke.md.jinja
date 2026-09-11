@@ -15,6 +15,11 @@ repo, do not improve anything you notice on the way.
 - **Your run root:** `{{ run_dir }}` (also in `$SLURM_AGENT_RUN_DIR`). Nothing you write for
   the orchestrator goes inside the repo — a dirty tree blocks the next launch.
 - **Your allocation ends at {{ lease }}.** You will not need a tenth of it.
+- The repo you are standing in may be the slurm-agent control plane itself — that is the
+  one repo a fork is always allowed to clone and push to, which is why the smoke test uses
+  it. Its `CLAUDE.md` says it only works from the researcher's laptop, and that is true and
+  irrelevant here: you are not running it, you are committing one notebook into it. Ignore
+  its conventions and follow the five steps below.
 
 ## The task, in order
 
