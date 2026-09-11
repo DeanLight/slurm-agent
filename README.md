@@ -15,6 +15,13 @@ See [docs/setup.md](docs/setup.md). Short version:
 uv sync --all-groups && poe hooks && poe init
 ```
 
+Then run **[docs/quickstart.ipynb](docs/quickstart.py)** once on the new machine
+(`poe nb` pairs it first). It walks `init` → `hc` → one allocation carrying two real
+agents, one **interactive** and one **batch**, both pushing to a throwaway PR you look at
+and never merge. `poe hc` proves the wiring; the quick start proves the wiring carries an
+agent, for about a dollar. Commit it with its outputs — they are the proof this clone
+works.
+
 ## The one rule
 
 **The cluster is the only source of truth. The laptop holds nothing it cannot rebuild.**
@@ -45,6 +52,7 @@ loop you can stop and restart at will.
 | `poe notify-test` | Really send, from here and from the cluster |
 | `poe monitor-*` | The change-gated usage digest and its schedule |
 | `poe session-new NAME --into DIR` | Scaffold a session notebook in the repo it is about |
+| `poe agent-run SMOKE-x --job J --agent smoke` | The two-minute smoke agent — see the quick start |
 
 `poe --help` is the full inventory.
 

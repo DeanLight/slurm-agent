@@ -6,7 +6,7 @@
 #       extension: .py
 #       format_name: percent
 #       format_version: '1.3'
-#       jupytext_version: 1.16.0
+#       jupytext_version: 1.19.5
 #   kernelspec:
 #     display_name: Python 3
 #     language: python
@@ -172,6 +172,10 @@ class AgentConfig(BaseModel):
     max_leases: int = 4
     batch_time: str = "12:00:00"
     model: str | None = None
+    # Which launch prompt in `prompts/` this agent gets. The default briefs an experiment
+    # agent; a cheap smoke agent wants a much smaller brief, and the difference belongs in
+    # the audit surface next to `allowed_tools` rather than buried in the launcher.
+    prompt: str = "agent_launch.md.jinja"
 
 
 # %%
@@ -186,6 +190,8 @@ if test():
     )
     assert agent.mode == "interactive"
     assert duration_seconds(agent.lease) == 14400
+    # Unstated, an agent gets the experiment brief — the old behaviour, unchanged.
+    assert agent.prompt == "agent_launch.md.jinja"
 
     try:
         AgentConfig(repo="x", ref="y", workdir="z", log_dir="d",
@@ -256,6 +262,17 @@ def load(path: Path | str, model: type[T]) -> T:
             f"{path} not found — run `poe init` to create the local footprint"
         )
     return model.model_validate(yaml.safe_load(path.read_text()) or {})
+
+
+def load_agents(directory: Path | str = "agents") -> dict[str, AgentConfig]:
+    """Every `agents/<kind>.yaml`, keyed by its **kind** — the filename stem.
+
+    The kind is the answer to "which repos does this clone manage?": one file per agent,
+    and the file names the repo, the ref and the workdir it is staged into. Keeping the
+    stem alongside the config is what lets a report say `agents/experiment-runner.yaml`
+    rather than leaving you to guess which file to edit.
+    """
+    return {p.stem: load(p, AgentConfig) for p in sorted(Path(directory).glob("*.yaml"))}
 
 
 # %%

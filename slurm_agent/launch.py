@@ -6,7 +6,7 @@
 #       extension: .py
 #       format_name: percent
 #       format_version: '1.3'
-#       jupytext_version: 1.16.0
+#       jupytext_version: 1.19.5
 #   kernelspec:
 #     display_name: Python 3
 #     language: python
@@ -138,8 +138,13 @@ def render(template: str, **context: object) -> str:
 
 def launch_prompt(agent: AgentConfig, *, task: str, log_dir: str, run_dir: str,
                   sha: str) -> str:
-    """The launch prompt: the task, the log directory, and the mailbox contract."""
-    return render("agent_launch.md.jinja", task=task, repo=agent.repo, ref=agent.ref,
+    """The launch prompt: the task, the log directory, and the mailbox contract.
+
+    Which brief an agent gets is its own declared property, so the same launcher can put a
+    twelve-hour experiment agent and a two-minute smoke agent on the same allocation.
+    Every brief takes the same variables — that is what makes them interchangeable.
+    """
+    return render(agent.prompt, task=task, repo=agent.repo, ref=agent.ref,
                   sha=sha[:8], workdir=agent.workdir, log_dir=log_dir,
                   run_dir=run_dir, lease=agent.lease)
 

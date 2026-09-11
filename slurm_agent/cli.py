@@ -41,32 +41,43 @@ def _notifier():
     """A `send(subject, body)` bound to the configured channels, or None if unconfigured."""
     from slurm_agent.notify import NotifyConfig, notify
 
+    from slurm_agent.notify import secret_keys
+
     cfg = load("config/notify.yaml", NotifyConfig)
-    keys = declared_env_keys(load("config/manager.yaml", ManagerConfig), [])
+    keys = secret_keys(declared_env_keys(load("config/manager.yaml", ManagerConfig), []))
     return lambda subject, body: notify(subject, body, cfg, keys)
+
+
+def _notify_config():
+    """config/notify.yaml — which channels are on, and so which keys are actually needed."""
+    from slurm_agent.notify import NotifyConfig
+
+    return load("config/notify.yaml", NotifyConfig)
 
 
 def _manager() -> ManagerConfig:
     return load("config/manager.yaml", ManagerConfig)
 
 
-def _agents() -> list[AgentConfig]:
-    from pathlib import Path
+def _agents() -> dict[str, AgentConfig]:
+    """Every agents/<kind>.yaml, keyed by kind — the whole list of repos this clone manages."""
+    from slurm_agent.config import load_agents
 
-    return [load(p, AgentConfig) for p in sorted(Path("agents").glob("*.yaml"))]
+    return load_agents()
 
 
 def _notify_test():
     from slurm_agent import notify as notifier
 
     cfg = load("config/notify.yaml", notifier.NotifyConfig)
-    return notifier.notify_test(cfg, declared_env_keys(_manager(), _agents()), run=_runner())
+    keys = notifier.secret_keys(declared_env_keys(_manager(), list(_agents().values())))
+    return notifier.notify_test(cfg, keys, run=_runner())
 
 
 def _report(checks) -> None:
     from slurm_agent import preflight
 
-    print(preflight.render(checks))
+    preflight.print_report(checks)
     raise SystemExit(1 if any(c.ok is False for c in checks) else 0)
 
 
@@ -91,10 +102,18 @@ def init(send: bool = True) -> None:
 
     cluster, manager, agents = _cluster(), _manager(), _agents()
     run = _runner()
-    for check in preflight.init(cluster, manager, agents, run):
-        print(f"{check.name:<24} {check.detail}")
-    print()
+    from rich.console import Console
+    from rich.rule import Rule
+
+    console = Console()
+    # What this clone manages, BEFORE anything is created — so the report that follows
+    # reads as "this place, that place" rather than a flat list of unattributed failures.
+    preflight.print_inventory(cluster, manager, agents)
+    console.print(Rule("[bold]Creating[/]", align="left", style="dim"))
+    preflight.print_report(preflight.init(cluster, manager, agents, run))
+    console.print(Rule("[bold]Checking[/]", align="left", style="dim"))
     _report(preflight.healthcheck(cluster, manager, agents, run, full=True, send=send,
+                                  notify=_notify_config(),
                                   notify_test=_notify_test if send else None))
 
 
@@ -104,7 +123,7 @@ def healthcheck(full: bool = False, send: bool = False) -> None:
     from slurm_agent import preflight
 
     _report(preflight.healthcheck(_cluster(), _manager(), _agents(), _runner(),
-                                  full=full, send=send,
+                                  full=full, send=send, notify=_notify_config(),
                                   notify_test=_notify_test if send else None))
 
 
@@ -305,7 +324,8 @@ def notify_test() -> None:
 
     cfg = load("config/notify.yaml", notifier.NotifyConfig)
     manager = load("config/manager.yaml", ManagerConfig)
-    rows = notifier.notify_test(cfg, declared_env_keys(manager, []), run=_runner())
+    keys = notifier.secret_keys(declared_env_keys(manager, []))
+    rows = notifier.notify_test(cfg, keys, run=_runner())
     for where, ok, detail in rows:
         print(f"{where:<9} {'ok' if ok else 'FAILED':<7} {detail}")
     raise SystemExit(0 if all(ok for _, ok, _ in rows) else 1)

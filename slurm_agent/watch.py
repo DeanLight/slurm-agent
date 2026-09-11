@@ -6,7 +6,7 @@
 #       extension: .py
 #       format_name: percent
 #       format_version: '1.3'
-#       jupytext_version: 1.16.0
+#       jupytext_version: 1.19.5
 #   kernelspec:
 #     display_name: Python 3
 #     language: python
@@ -341,10 +341,10 @@ def _escalate(view: AgentView, decision: Decision, cluster: ClusterConfig) -> No
     """Tell the human. Never lets a notification failure take the loop down with it."""
     try:
         from slurm_agent.config import ManagerConfig, declared_env_keys, load
-        from slurm_agent.notify import NotifyConfig, notify
+        from slurm_agent.notify import NotifyConfig, notify, secret_keys
 
         cfg = load("config/notify.yaml", NotifyConfig)
-        keys = declared_env_keys(load("config/manager.yaml", ManagerConfig), [])
+        keys = secret_keys(declared_env_keys(load("config/manager.yaml", ManagerConfig), []))
         notify(f"[slurm-agent] {view.task} needs you", 
                f"{decision.detail}\nsession {view.session_id}\nrun dir {view.run_dir}\n",
                cfg, keys)

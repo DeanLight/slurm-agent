@@ -1,12 +1,16 @@
 # The local session's own settings — the mirror of agents/<kind>.yaml.
 #
-# requires_env names the environment KEYS this session needs and never their values.
-# Values live in the gitignored .envrc; `poe healthcheck` reports which are missing.
-requires_env:
-  - SLURM_AGENT_SMTP_HOST
-  - SLURM_AGENT_SMTP_PORT
-  - SLURM_AGENT_SMTP_USER
-  - SLURM_AGENT_SMTP_PASSWORD
-  - SLURM_AGENT_SLACK_WEBHOOK
+# requires_env names environment KEYS this session needs and never their values. Values
+# live in the gitignored .envrc; `poe healthcheck` reports which are missing.
+#
+# It is EMPTY, and that is not an oversight. The keys this laptop needs are the ones its
+# notification channels need, and which channels are on is already stated in
+# config/notify.yaml — so they are derived from there rather than copied here. Copying
+# them would let the two disagree, and the dangerous direction is the quiet one: turn
+# Slack on without updating a hand-kept list, and `poe hc` passes while the escalation it
+# was supposed to deliver never arrives.
+#
+# Put a key here only if the manager needs it for something OTHER than notifications.
+requires_env: []
 
 envrc: .envrc

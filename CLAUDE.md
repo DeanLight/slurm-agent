@@ -32,6 +32,34 @@ an agent. That rule is what makes a closed laptop lossless and two sessions agre
   `.envrc` on each machine; `requires_env` is how a config says what it needs. `poe` loads
   `.envrc` for every task via `[tool.poe] envfile`, so there is no credentials reader here
   and no `direnv` dependency.
+- **Every message names one of three places.** *This laptop* (this checkout, `~/.ssh/config`,
+  the keys for reaching you), *the login node* (run root, tmux, the Claude credential), and
+  *each staged repo on the cluster* (the keys that agent declares). They do not share files
+  and they do not share keys: `config/manager.yaml` is the laptop's, `agents/<kind>.yaml` is
+  that repo's. A `Check` carries `where`, `render` groups by it, and a row that cannot say
+  which machine it means is a bug — asking the laptop for an agent's `HF_TOKEN` failed a
+  correctly-configured machine and sent people to fill in a file nothing reads.
+- **Git auth is checked on both machines, and staging is not setup.** The laptop and the
+  login node hold different GitHub credentials, and the login node's is the one that
+  decides whether an agent can push the notebook a GPU-hour produced — so `hc` asks both,
+  and `--full` adds a `--dry-run` push, because `ls-remote` succeeds on a public repo with
+  no credential at all. A workdir, by contrast, is created by the first *launch*: "not
+  cloned yet" is the normal state of a fresh clone and must never render as a fault.
+- **A key is required because something reads it, never because a list says so.** Which
+  notification keys the laptop needs is derived from `config/notify.yaml`'s `channels` via
+  `notify.CHANNEL_KEYS`, which the senders themselves read through. `manager.requires_env`
+  is empty on purpose. A hand-kept list is wrong in both directions, and the quiet
+  direction is the dangerous one: turn Slack on without updating it and `hc` passes while
+  the escalation never arrives. A key with a default (`SMTP_PORT`) is reported, never
+  failed.
+- **`agents/*.yaml` IS the list of managed repos.** One file per agent, naming repo, ref and
+  workdir. That is the whole registry, and it follows from the one rule: nothing is
+  remembered between runs, so delete the file and the repo is no longer managed.
+- **Every shipped agent points at this repo and declares no keys.** They are examples, and
+  a fork must not inherit a config naming a repo it cannot clone or a token it has no use
+  for — either turns a correctly-set-up laptop red with no fix available to its owner. The
+  one repo a fork can always clone and push to is itself. Two tests pin this; declare keys
+  and real repos on an agent you actually run, not on the examples.
 
 ## Working here
 
@@ -40,6 +68,13 @@ an agent. That rule is what makes a closed laptop lossless and two sessions agre
 - `poe init` **creates** the local footprint; `poe healthcheck` (alias `poe hc`) **verifies**
   it and creates nothing. `hc` is fast on purpose — run it after moving network or
   re-authing to Tillicum, where a dropped `ControlMaster` is the usual culprit.
+- `docs/quickstart.py` goes one step further than `hc`: it puts a real interactive agent
+  and a real batch agent on one allocation, each capped at `$1`. `hc` proves the wiring;
+  the quick start proves the wiring carries an agent. It is the one notebook this repo
+  commits with outputs, because those outputs are the proof a clone works.
+- Which brief an agent gets is its own declared property (`prompt:` in `agents/*.yaml`,
+  a template in `prompts/`). Every brief takes the same variables, which is what lets one
+  launcher carry a twelve-hour experiment agent and a two-minute smoke agent.
 - Source lives in `slurm_agent/` as jupytext `py:percent` paired notebooks with `if test():`
   blocks beside each function. Read the juplit skill (`poe skill`) before editing one.
 - Everything that touches the cluster takes a `Runner` (see `slurm_agent/remote.py`). That

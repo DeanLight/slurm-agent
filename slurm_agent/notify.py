@@ -6,7 +6,7 @@
 #       extension: .py
 #       format_name: percent
 #       format_version: '1.3'
-#       jupytext_version: 1.16.0
+#       jupytext_version: 1.19.5
 #   kernelspec:
 #     display_name: Python 3
 #     language: python
@@ -59,6 +59,53 @@ class NotifyConfig(BaseModel):
     slack_channel: str | None = None
 
 
+# Which env keys each channel reads. The senders below read THROUGH this map, so "what does
+# slack need" has exactly one answer and a healthcheck cannot drift from a send.
+#
+# Whether a key is needed is a property of the channels you turned on, not a list somebody
+# maintains by hand. A hand-maintained list gets this wrong in both directions: it demands
+# a webhook from someone who turned Slack off, and — far worse — it stays quiet for someone
+# who turned Slack on without adding the key, so the healthcheck passes and the escalation
+# that was supposed to reach them never arrives.
+CHANNEL_KEYS: dict[str, list[str]] = {
+    "email": ["SLURM_AGENT_SMTP_HOST", "SLURM_AGENT_SMTP_USER", "SLURM_AGENT_SMTP_PASSWORD"],
+    "slack": ["SLURM_AGENT_SLACK_WEBHOOK"],
+}
+# Read when set, defaulted when not. Never a reason to fail a healthcheck.
+DEFAULTED_KEYS: dict[str, list[str]] = {"email": ["SLURM_AGENT_SMTP_PORT"]}
+SMTP_PORT_DEFAULT = 587
+
+
+def required_keys(cfg: NotifyConfig | None) -> list[str]:
+    """The keys the channels you actually enabled cannot work without."""
+    if cfg is None:
+        return []
+    return sorted({k for c in cfg.channels for k in CHANNEL_KEYS.get(c, [])})
+
+
+def defaulted_keys(cfg: NotifyConfig | None) -> list[str]:
+    """Keys an enabled channel reads if set, and defaults if not."""
+    if cfg is None:
+        return []
+    return sorted({k for c in cfg.channels for k in DEFAULTED_KEYS.get(c, [])})
+
+
+def all_keys() -> list[str]:
+    """Every key any channel could read, enabled or not."""
+    return sorted({k for m in (CHANNEL_KEYS, DEFAULTED_KEYS) for ks in m.values() for k in ks})
+
+
+def secret_keys(extra: list[str] = ()) -> list[str]:
+    """Every key whose VALUE must be redacted from anything leaving here, plus `extra`.
+
+    Deliberately every channel's keys, not just the enabled ones: whether a value must stay
+    out of a log has nothing to do with whether its channel is currently switched on, and a
+    webhook left in `.envrc` after turning Slack off is exactly the value you would least
+    like echoed back by a failing SMTP server.
+    """
+    return sorted(set(all_keys()) | set(extra))
+
+
 # %% [markdown]
 # ## Scrubbing
 #
@@ -94,12 +141,11 @@ def send_email(subject: str, body: str, *, to: str, keys: list[str],
                env: dict[str, str] | None = None) -> None:
     """One email via smtplib. STARTTLS, app-password auth."""
     env = os.environ if env is None else env
-    host = env.get("SLURM_AGENT_SMTP_HOST")
-    user = env.get("SLURM_AGENT_SMTP_USER")
-    password = env.get("SLURM_AGENT_SMTP_PASSWORD")
-    port = int(env.get("SLURM_AGENT_SMTP_PORT") or 587)
+    # Read through CHANNEL_KEYS, so what a send needs and what a check demands are one list.
+    host, user, password = (env.get(key) for key in CHANNEL_KEYS["email"])
+    port = int(env.get(DEFAULTED_KEYS["email"][0]) or SMTP_PORT_DEFAULT)
     if not (host and user and password):
-        raise NotifyError("email needs SLURM_AGENT_SMTP_HOST/USER/PASSWORD in .envrc")
+        raise NotifyError(f"email needs {', '.join(CHANNEL_KEYS['email'])} in .envrc")
 
     message = EmailMessage()
     message["Subject"] = subject
@@ -122,9 +168,10 @@ def send_slack(text: str, *, keys: list[str], channel: str | None = None,
     A webhook takes `{"text": …}`. No SDK, no OAuth app, no dependency.
     """
     env = os.environ if env is None else env
-    webhook = env.get("SLURM_AGENT_SLACK_WEBHOOK")
+    (key,) = CHANNEL_KEYS["slack"]
+    webhook = env.get(key)
     if not webhook:
-        raise NotifyError("slack needs SLURM_AGENT_SLACK_WEBHOOK in .envrc")
+        raise NotifyError(f"slack needs {key} in .envrc")
 
     payload = {"text": text}
     if channel:
