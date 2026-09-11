@@ -39,6 +39,13 @@ an agent. That rule is what makes a closed laptop lossless and two sessions agre
   that repo's. A `Check` carries `where`, `render` groups by it, and a row that cannot say
   which machine it means is a bug — asking the laptop for an agent's `HF_TOKEN` failed a
   correctly-configured machine and sent people to fill in a file nothing reads.
+- **A key is required because something reads it, never because a list says so.** Which
+  notification keys the laptop needs is derived from `config/notify.yaml`'s `channels` via
+  `notify.CHANNEL_KEYS`, which the senders themselves read through. `manager.requires_env`
+  is empty on purpose. A hand-kept list is wrong in both directions, and the quiet
+  direction is the dangerous one: turn Slack on without updating it and `hc` passes while
+  the escalation never arrives. A key with a default (`SMTP_PORT`) is reported, never
+  failed.
 - **`agents/*.yaml` IS the list of managed repos.** One file per agent, naming repo, ref and
   workdir. That is the whole registry, and it follows from the one rule: nothing is
   remembered between runs, so delete the file and the repo is no longer managed.

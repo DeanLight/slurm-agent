@@ -199,6 +199,13 @@ sh("uv run poe init")
 # For email you want an **app password**, not your account password. For Slack you want an
 # [incoming webhook](https://api.slack.com/messaging/webhooks) URL.
 #
+# **Only the channels you turned on need keys.** `config/notify.yaml`'s `channels` decides:
+# drop `slack` and the webhook stops being required; add it and the webhook starts being
+# required. That second direction is the one worth having — a channel switched on without
+# its key would otherwise pass the healthcheck and then silently deliver nothing at the
+# moment an agent needed a human. `SLURM_AGENT_SMTP_PORT` has a default of 587, so it is
+# reported as defaulted rather than missing.
+#
 # The fast healthcheck below says which keys are still placeholders, under the heading of
 # the machine each is read on. It creates nothing, prints names only, and reads values from
 # `.envrc` the same way every `poe` task does — via `[tool.poe] envfile`, so this repo has

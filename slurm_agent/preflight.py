@@ -53,6 +53,7 @@ from slurm_agent.config import (
     load,
     missing_env,
 )
+from slurm_agent.notify import NotifyConfig
 from slurm_agent.remote import Runner, RemoteError, remote_path
 
 log = structlog.get_logger(__name__)
@@ -508,7 +509,7 @@ def healthcheck(cluster: ClusterConfig, manager: ManagerConfig,
                 agents: dict[str, AgentConfig], run: Runner, *, full: bool = False,
                 send: bool = False, envrc: Path | None = None,
                 env: dict[str, str] | None = None, ssh_dir: Path | None = None,
-                notify_test=None) -> list[Check]:
+                notify: "NotifyConfig | None" = None, notify_test=None) -> list[Check]:
     """Is everything wired and working? FAST tier by default; `--full` adds the slow proofs.
 
     Every row carries the place it is about, and the three places do not share keys or
@@ -526,15 +527,30 @@ def healthcheck(cluster: ClusterConfig, manager: ManagerConfig,
     # ONLY the manager's keys. An agent's keys are read on the compute node, out of the
     # .envrc beside the repo it runs in — asking the laptop for an HF token would fail a
     # correctly-configured machine and send you to fill in a file nothing ever reads.
-    keys = sorted(set(manager.requires_env))
+    #
+    # And only the keys the channels you turned ON need. Which keys those are is derived
+    # from config/notify.yaml rather than listed by hand, so turning a channel off stops
+    # its key being demanded, and turning one on starts — the direction that matters, since
+    # a hand-maintained list would pass while the escalation silently never arrived.
+    from slurm_agent import notify as notifier
+
+    keys = sorted(set(manager.requires_env) | set(notifier.required_keys(notify)))
     absent = missing_env(keys, env)
+    defaulted = [k for k in notifier.defaulted_keys(notify) if not env.get(k)]
+    off = sorted(set(notifier.all_keys()) - set(keys) - set(defaulted))
     elsewhere = sorted({k for a in agents.values() for k in a.requires_env} - set(keys))
+    channels = ", ".join(notify.channels) if notify else "none configured"
     checks.append(Check(
         name="my keys", ok=not absent,
-        detail=f"{len(keys) - len(absent)}/{len(keys)} keys for reaching me are set"
+        detail=f"{len(keys) - len(absent)}/{len(keys)} set for channels: {channels}"
                + (f" — missing {', '.join(absent)}" if absent else "")
-               + (f" (not checked here: {', '.join(elsewhere)} — those belong in the "
-                  "staged repos below)" if elsewhere else ""),
+               + (f"\n[dim]defaulted:[/] {', '.join(defaulted)} unset, using the built-in "
+                  f"default ({notifier.SMTP_PORT_DEFAULT} for the SMTP port)"
+                  if defaulted else "")
+               + (f"\n[dim]not needed:[/] {', '.join(off)} — for a channel "
+                  "config/notify.yaml does not enable" if off else "")
+               + (f"\n[dim]not checked here:[/] {', '.join(elsewhere)} — those belong in "
+                  "the staged repos below" if elsewhere else ""),
         fix=f"fill them in in {envrc}" if absent else None,
     ))
     checks.append(_ssh_config_check(ssh_dir, cluster))
@@ -809,6 +825,41 @@ if test():
         assert rows["my keys"].ok is False
         assert "SLURM_AGENT_SMTP_HOST" in rows["my keys"].detail
         display(rows["my keys"].detail)
+
+
+# %%
+if test():
+    # A channel you turned OFF must not be demanded, and a channel you turned ON must be —
+    # the second is the one that matters, because a hand-kept list gets it wrong silently
+    # and the escalation never arrives.
+    with tempfile.TemporaryDirectory() as tmp:
+        envrc = Path(tmp) / ".envrc"
+        envrc.write_text("x\n")
+        envrc.chmod(0o600)
+        smtp = {"SLURM_AGENT_SMTP_HOST": "smtp.x", "SLURM_AGENT_SMTP_USER": "me",
+                "SLURM_AGENT_SMTP_PASSWORD": "pw"}
+
+        def keys_row(channels, env):
+            rows = healthcheck(cluster, ManagerConfig(), {}, FakeRunner(),
+                               envrc=envrc, env=env, notify=NotifyConfig(channels=channels))
+            return next(c for c in rows if c.name == "my keys")
+
+        # Email only, and the webhook absent: nothing is missing.
+        email_only = keys_row(["email"], smtp)
+        assert email_only.ok, email_only.detail
+        assert "SLURM_AGENT_SLACK_WEBHOOK" in email_only.detail
+        assert "not needed" in email_only.detail
+
+        # Turn Slack on without adding the key, and it fails — loudly, here, rather than
+        # at the moment an agent needed a human.
+        both = keys_row(["email", "slack"], smtp)
+        assert both.ok is False
+        assert "SLURM_AGENT_SLACK_WEBHOOK" in both.detail
+
+        # The SMTP port has a default, so its absence is noted and never a failure.
+        assert "defaulted" in email_only.detail
+        assert "SLURM_AGENT_SMTP_PORT" in email_only.detail
+        display(render([email_only, both]))
 
 
 # %%

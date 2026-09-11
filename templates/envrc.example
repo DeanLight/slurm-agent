@@ -16,17 +16,19 @@
 
 # ── keys ──────────────────────────────────────────────────────────────────────
 
-# ── email · the manager's own · read on your LAPTOP ────────────────────────────
+# ── email · read on your LAPTOP, only when the email channel is on ────────────
 # The usage digest, and agents announcing themselves.
 SLURM_AGENT_SMTP_HOST=<secret-here>
-SLURM_AGENT_SMTP_PORT=<secret-here>
 SLURM_AGENT_SMTP_USER=<secret-here>
 # An app password, never your account password.
 SLURM_AGENT_SMTP_PASSWORD=<secret-here>
+# Optional: defaults to 587 when unset. `poe hc` says so and never fails on it.
+SLURM_AGENT_SMTP_PORT=<secret-here>
 
-# ── slack · the manager's own · read on your LAPTOP ────────────────────────────
+# ── slack · read on your LAPTOP, only when the slack channel is on ────────────
 # An incoming webhook URL: https://api.slack.com/messaging/webhooks
-# Do not want Slack? Drop this key from config/manager.yaml as well.
+# Do not want Slack? Remove `slack` from `channels` in config/notify.yaml, and this key
+# stops being required — `poe hc` derives what it needs from the channels you turned on.
 SLURM_AGENT_SLACK_WEBHOOK=<secret-here>
 
 # ── declared by agents/*.yaml · read on the CLUSTER, in the staged repo ───────

@@ -41,9 +41,18 @@ def _notifier():
     """A `send(subject, body)` bound to the configured channels, or None if unconfigured."""
     from slurm_agent.notify import NotifyConfig, notify
 
+    from slurm_agent.notify import secret_keys
+
     cfg = load("config/notify.yaml", NotifyConfig)
-    keys = declared_env_keys(load("config/manager.yaml", ManagerConfig), [])
+    keys = secret_keys(declared_env_keys(load("config/manager.yaml", ManagerConfig), []))
     return lambda subject, body: notify(subject, body, cfg, keys)
+
+
+def _notify_config():
+    """config/notify.yaml — which channels are on, and so which keys are actually needed."""
+    from slurm_agent.notify import NotifyConfig
+
+    return load("config/notify.yaml", NotifyConfig)
 
 
 def _manager() -> ManagerConfig:
@@ -61,7 +70,7 @@ def _notify_test():
     from slurm_agent import notify as notifier
 
     cfg = load("config/notify.yaml", notifier.NotifyConfig)
-    keys = declared_env_keys(_manager(), list(_agents().values()))
+    keys = notifier.secret_keys(declared_env_keys(_manager(), list(_agents().values())))
     return notifier.notify_test(cfg, keys, run=_runner())
 
 
@@ -104,6 +113,7 @@ def init(send: bool = True) -> None:
     preflight.print_report(preflight.init(cluster, manager, agents, run))
     console.print(Rule("[bold]Checking[/]", align="left", style="dim"))
     _report(preflight.healthcheck(cluster, manager, agents, run, full=True, send=send,
+                                  notify=_notify_config(),
                                   notify_test=_notify_test if send else None))
 
 
@@ -113,7 +123,7 @@ def healthcheck(full: bool = False, send: bool = False) -> None:
     from slurm_agent import preflight
 
     _report(preflight.healthcheck(_cluster(), _manager(), _agents(), _runner(),
-                                  full=full, send=send,
+                                  full=full, send=send, notify=_notify_config(),
                                   notify_test=_notify_test if send else None))
 
 
@@ -314,7 +324,8 @@ def notify_test() -> None:
 
     cfg = load("config/notify.yaml", notifier.NotifyConfig)
     manager = load("config/manager.yaml", ManagerConfig)
-    rows = notifier.notify_test(cfg, declared_env_keys(manager, []), run=_runner())
+    keys = notifier.secret_keys(declared_env_keys(manager, []))
+    rows = notifier.notify_test(cfg, keys, run=_runner())
     for where, ok, detail in rows:
         print(f"{where:<9} {'ok' if ok else 'FAILED':<7} {detail}")
     raise SystemExit(0 if all(ok for _, ok, _ in rows) else 1)

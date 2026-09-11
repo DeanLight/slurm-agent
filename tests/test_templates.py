@@ -43,10 +43,18 @@ def test_template_holds_no_real_values():
 
 
 def test_template_covers_exactly_the_declared_keys():
-    """The example matches the union of every requires_env in the repo."""
+    """The example matches every key this repo can ask for, from wherever it is declared.
+
+    Three sources, and the template is the one place they are all visible: the manager's
+    own `requires_env`, each agent's, and the notification channels' — which are derived
+    from `CHANNEL_KEYS` rather than listed by hand, so a new channel cannot be added
+    without the template growing its key.
+    """
+    from slurm_agent.notify import all_keys
+
     manager = load(ROOT / "config" / "manager.yaml", ManagerConfig)
-    agents = [load(p, AgentConfig) for p in sorted((ROOT / "agents").glob("*.yaml"))]
-    assert sorted(_template_pairs()) == declared_env_keys(manager, agents)
+    expected = sorted(set(declared_env_keys(manager, _agents())) | set(all_keys()))
+    assert sorted(_template_pairs()) == expected
 
 
 def test_envrc_is_gitignored():

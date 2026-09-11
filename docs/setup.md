@@ -79,6 +79,13 @@ poe hc             # says which keys are still missing, and on which machine
 For email you want an **app password**, not your account password. For Slack you want an
 [incoming webhook](https://api.slack.com/messaging/webhooks) URL.
 
+**You only need the keys for the channels you turned on.** `config/notify.yaml`'s
+`channels` is what decides — drop `slack` from it and the webhook stops being required;
+add it and the webhook starts being required, which is the direction that matters, since
+a channel switched on without its key would otherwise pass the healthcheck and silently
+deliver nothing. `SLURM_AGENT_SMTP_PORT` has a default of 587, so `poe hc` reports it as
+defaulted rather than missing.
+
 ## A different `.envrc` per staged repo, on Tillicum
 
 Remote agents read their keys — and send their notifications — from the compute node, so
