@@ -54,9 +54,12 @@ an agent. That rule is what makes a closed laptop lossless and two sessions agre
   failed. Optional means OFF: `config/notify.yaml` ships `channels: [email]`, because a
   channel that is on but cannot send is worse than one that is off — you find out when
   nothing arrives.
-- **The report is the only summary.** There is no inventory block printed alongside it: the
-  group headings already name every place and every managed repo, and a second rendering of
-  the same facts is a second thing to keep true and a second thing to disagree.
+- **The report is the only output.** No inventory beside it, and no separate account of
+  what was created: the group headings already name every place and every managed repo, and
+  `init` returns notes — keyed by (place, row) — that fold into the row they are about.
+  `init` never reports a failure of its own, because the check seconds later says the same
+  thing better; saying it twice is how a missing login node arrived as four lines of ssh
+  askpass noise.
 - **`agents/*.yaml` IS the list of managed repos.** One file per agent, naming repo, ref and
   workdir. That is the whole registry, and it follows from the one rule: nothing is
   remembered between runs, so delete the file and the repo is no longer managed.

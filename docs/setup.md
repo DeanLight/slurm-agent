@@ -53,9 +53,11 @@ tmux is installed there. Set `allocation_mode: no_shell` in `config/cluster.yaml
 not — you lose the ability to attach to a running allocation.
 
 `poe init` creates what it safely can — `.envrc` from the template at mode 0600, the ssh
-config entries, the run root on the cluster — and then runs a full healthcheck that
-**really sends** a test email and Slack message, from your laptop *and* from Tillicum. A
-clone is not set up until both arrive.
+config entries, the run root on the cluster — and then prints **one** report of everything,
+grouped by machine. Creation itself says nothing: what exists afterwards is the report's to
+state, and what was just created rides along inside that row as a `·` note. Its full tier
+**really sends** a test message from your laptop *and* from Tillicum. A clone is not set up
+until it arrives.
 
 It will fail the first time, and that is correct: the `.envrc` it just wrote is full of
 `<secret-here>` placeholders. Fill them in.

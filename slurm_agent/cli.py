@@ -102,18 +102,12 @@ def init(send: bool = True) -> None:
 
     cluster, manager, agents = _cluster(), _manager(), _agents()
     run = _runner()
-    from rich.console import Console
-    from rich.rule import Rule
-
-    console = Console()
-    # Created first, then checked — and only the check produces a report. An inventory
-    # printed beforehand said the same things the report's own headings say, so it was a
-    # second place to keep true and a second place to disagree.
-    console.print(Rule("[bold]Creating[/]", align="left", style="dim"))
-    preflight.print_report(preflight.init(cluster, manager, agents, run))
-    console.print(Rule("[bold]Checking[/]", align="left", style="dim"))
+    # Create, then report ONCE. `init` returns notes rather than a report of its own,
+    # because creating and checking the same three files produced two sections saying the
+    # same things — and a creation failure got told twice, the first time in ssh's words.
+    created = preflight.init(cluster, manager, agents, run)
     _report(preflight.healthcheck(cluster, manager, agents, run, full=True, send=send,
-                                  notify=_notify_config(),
+                                  notify=_notify_config(), created=created,
                                   notify_test=_notify_test if send else None))
 
 

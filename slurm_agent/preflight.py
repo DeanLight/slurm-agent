@@ -195,72 +195,77 @@ def print_report(checks: list[Check]) -> None:
 # %%
 def init(cluster: ClusterConfig, manager: ManagerConfig, agents: dict[str, AgentConfig],
          run: Runner, *, envrc: Path | None = None, ssh_dir: Path | None = None,
-         apply: bool = True) -> list[Check]:
-    """Create the local footprint. Creates only what is safe, and never a secret value."""
+         apply: bool = True) -> dict[tuple[str, str], str]:
+    """Create the local footprint, and return a NOTE per thing it touched.
+
+    Notes, not checks. Creating and checking the same three files produced two reports that
+    said the same things in different words — and worse, a creation failure got reported
+    twice: once as a wall of ssh output, and once, correctly, as the check that follows it
+    saying the login node is unreachable. So this reports nothing itself. It attempts, and
+    what actually exists afterwards is `healthcheck`'s to say; the note only adds the one
+    fact a check cannot know, which is whether the thing was already there.
+    """
     envrc = envrc or Path(manager.envrc)
     ssh_dir = ssh_dir or Path("~/.ssh").expanduser()
-    made: list[Check] = []
+    # Keyed by (place, row), never by row alone: three different machines each have a file
+    # called `.envrc`, and a note that found the wrong one would claim a cluster-side file
+    # had just been created here.
+    notes: dict[tuple[str, str], str] = {}
 
     if envrc.exists():
         # The one file here holding irreplaceable human input. Never overwritten.
-        made.append(Check(name=".envrc", ok=True, detail=f"{envrc} already exists — kept"))
+        notes[(LAPTOP, ".envrc")] = "already existed — kept as it was"
     elif apply:
         envrc.write_text(_render_template(cluster, manager, agents))
         envrc.chmod(stat.S_IRUSR | stat.S_IWUSR)
-        made.append(Check(name=".envrc", ok=True,
-                          detail=f"created {envrc} at 0600 with {SECRET_PLACEHOLDER} values",
-                          fix=None))
+        notes[(LAPTOP, ".envrc")] = (f"just created, with {SECRET_PLACEHOLDER} values to "
+                                     "fill in")
 
-    made.extend(_install_ssh(ssh_dir, cluster, apply=apply))
+    notes.update({(LAPTOP, name): note
+                  for name, note in _install_ssh(ssh_dir, cluster, apply=apply).items()})
 
     if apply:
         try:
             run(f"mkdir -p {remote_path(cluster.run_root)}")
-            made.append(Check(name="run root", ok=True, detail=f"{cluster.run_root} ready",
-                              where=login_node(cluster)))
-        except RemoteError as exc:
-            made.append(Check(name="run root", ok=False, detail=str(exc),
-                              fix="check `ssh` reaches the login host",
-                              where=login_node(cluster)))
-    return made
+            notes[(login_node(cluster), "run root")] = "just created"
+        except RemoteError:
+            # Deliberately silent. The `run root` check runs seconds later against the same
+            # login node and will say either that it is missing or that the node is
+            # unreachable — saying it here too, in ssh's own words, is the noise.
+            pass
+    return notes
 
 
 SSH_MARK_START = "# >>> slurm-agent >>>"
 SSH_MARK_END = "# <<< slurm-agent <<<"
 
 
-def _install_ssh(ssh_dir: Path, cluster: ClusterConfig, *, apply: bool = True) -> list[Check]:
+def _install_ssh(ssh_dir: Path, cluster: ClusterConfig, *,
+                 apply: bool = True) -> dict[str, str]:
     """Add our hosts to ~/.ssh/config without disturbing anything already there.
 
     Never overwrites. `~/.ssh/config` is a file people keep years of other clusters and
     servers in, so our block is appended between markers and only if the host is not
     already defined — by us or by hand.
     """
-    made: list[Check] = []
+    notes: dict[str, str] = {}
 
     node_source = Path("ssh_config_templates") / "tillicum-node-config"
     node_target = ssh_dir / node_source.name
-    if node_source.exists():
-        if node_target.exists():
-            # Ours alone, but `poe job-up` rewrites its Hostname — never clobber that.
-            made.append(Check(name="ssh node config", ok=True,
-                              detail=f"{node_target} already exists — kept"))
-        elif apply:
-            ssh_dir.mkdir(parents=True, exist_ok=True)
-            shutil.copy(node_source, node_target)
-            made.append(Check(name="ssh node config", ok=True,
-                              detail=f"installed {node_target}"))
+    if node_source.exists() and not node_target.exists() and apply:
+        ssh_dir.mkdir(parents=True, exist_ok=True)
+        shutil.copy(node_source, node_target)
+        notes["ssh config"] = f"just installed {node_target.name}"
 
     source = Path("ssh_config_templates") / "config"
     target = ssh_dir / "config"
     if not source.exists():
-        return made
+        return notes
 
     existing = target.read_text() if target.exists() else ""
     if re.search(rf"(?im)^\s*host\s+.*\b{re.escape(cluster.login_host)}\b", existing):
-        made.append(Check(name="ssh config", ok=True,
-                          detail=f"{cluster.login_host} already defined in {target} — untouched"))
-        return made
+        notes["ssh config"] = f"{cluster.login_host} was already defined — left untouched"
+        return notes
 
     block = f"\n{SSH_MARK_START}\n{source.read_text().strip()}\n{SSH_MARK_END}\n"
     if apply:
@@ -268,10 +273,10 @@ def _install_ssh(ssh_dir: Path, cluster: ClusterConfig, *, apply: bool = True) -
         with target.open("a") as handle:
             handle.write(block)
         target.chmod(stat.S_IRUSR | stat.S_IWUSR)
-    made.append(Check(name="ssh config", ok=True,
-                      detail=f"appended {cluster.login_host} to {target} "
-                             f"({len(existing.splitlines())} existing lines kept)"))
-    return made
+    kept = len(existing.splitlines())
+    notes["ssh config"] = ("just appended" if not kept else
+                           f"just appended, keeping the {kept} lines already there")
+    return notes
 
 
 def _render_template(cluster: ClusterConfig, manager: ManagerConfig,
@@ -383,13 +388,14 @@ if test():
                 "    User someone\n\nHost bastion\n    Hostname 10.0.0.1\n")
         (ssh_dir / "config").write_text(mine)
 
-        rows = _install_ssh(ssh_dir, ClusterConfig(login_host="tillicum-login"))
+        notes = _install_ssh(ssh_dir, ClusterConfig(login_host="tillicum-login"))
         after = (ssh_dir / "config").read_text()
 
         assert after.startswith(mine)          # every existing line survives, in order
         assert "my-other-cluster" in after and "bastion" in after
         assert SSH_MARK_START in after and "tillicum-login" in after
-        assert any("appended" in r.detail for r in rows)
+        assert "appended" in notes["ssh config"]
+        assert "6 lines already there" in notes["ssh config"]
         display(after)
 
 
@@ -403,14 +409,14 @@ if test():
         hand_rolled = "Host tillicum-login\n    Hostname klone.hyak.uw.edu\n    User me\n"
         (ssh_dir / "config").write_text(hand_rolled)
 
-        rows = _install_ssh(ssh_dir, ClusterConfig(login_host="tillicum-login"))
+        notes = _install_ssh(ssh_dir, ClusterConfig(login_host="tillicum-login"))
         assert (ssh_dir / "config").read_text() == hand_rolled
-        assert any("untouched" in r.detail for r in rows)
+        assert "untouched" in notes["ssh config"]
 
         # And running init twice does not append a second block.
         _install_ssh(ssh_dir, ClusterConfig(login_host="tillicum-login"))
         assert (ssh_dir / "config").read_text().count("Host tillicum-login") == 1
-        display(rows[-1].detail)
+        display(notes["ssh config"])
 
 
 # %%
@@ -444,7 +450,8 @@ def healthcheck(cluster: ClusterConfig, manager: ManagerConfig,
                 send: bool = False, envrc: Path | None = None,
                 env: dict[str, str] | None = None, ssh_dir: Path | None = None,
                 notify: "NotifyConfig | None" = None, notify_test=None,
-                local: Runner | None = None) -> list[Check]:
+                local: Runner | None = None,
+                created: dict[tuple[str, str], str] | None = None) -> list[Check]:
     """Is everything wired and working? FAST tier by default; `--full` adds the slow proofs.
 
     Every row carries the place it is about, and the three places do not share keys or
@@ -552,6 +559,24 @@ def healthcheck(cluster: ClusterConfig, manager: ManagerConfig,
     else:
         checks.append(Check(name="notify send", ok=None,
                             detail="not attempted — run `poe init` or `poe hc --send`"))
+    return _annotate(checks, created)
+
+
+def _annotate(checks: list[Check],
+              created: dict[tuple[str, str], str] | None) -> list[Check]:
+    """Fold `poe init`'s notes into the rows they are about.
+
+    This is what makes one report instead of two. A note is the only thing a check cannot
+    work out for itself — whether the file it is looking at was already there or was put
+    there a second ago — so it belongs inside that row rather than in a section above it
+    restating the same three filenames.
+    """
+    if not created:
+        return checks
+    for check in checks:
+        note = created.get((check.where, check.name))
+        if note:
+            check.detail += f"\n[dim]· {note}[/]"
     return checks
 
 
@@ -589,16 +614,22 @@ def _ssh_config_check(ssh_dir: Path | None, cluster: ClusterConfig) -> Check:
     `poe init` appends it. Without this row a fresh clone's only symptom is the cluster
     row failing, which reads like a network or auth problem rather than a missing host.
     """
-    target = (ssh_dir or Path("~/.ssh").expanduser()) / "config"
+    ssh_dir = ssh_dir or Path("~/.ssh").expanduser()
+    target = ssh_dir / "config"
     if not target.exists():
         return Check(name="ssh config", ok=False, detail=f"{target} missing",
                      fix="poe init")
     defined = bool(re.search(rf"(?im)^\s*host\s+.*\b{re.escape(cluster.login_host)}\b",
                              target.read_text()))
-    return Check(name="ssh config", ok=defined,
-                 detail=f"{target} defines {cluster.login_host}" if defined
-                 else f"{target} has no {cluster.login_host} host",
-                 fix=None if defined else "poe init")
+    # The node config is `Include`d by the main one, so a missing node file breaks ssh
+    # just as surely as a missing host block. One row, because it is one question.
+    node = ssh_dir / "tillicum-node-config"
+    node_ok = node.exists() or not (Path("ssh_config_templates") / node.name).exists()
+    return Check(name="ssh config", ok=defined and node_ok,
+                 detail=(f"{target} defines {cluster.login_host}" if defined
+                         else f"{target} has no {cluster.login_host} host")
+                        + ("" if node_ok else f", but {node} is missing"),
+                 fix=None if defined and node_ok else "poe init")
 
 
 def _envrc_check(envrc: Path) -> Check:
@@ -861,6 +892,9 @@ if test():
         ssh_dir = Path(tmp) / "ssh"
         ssh_dir.mkdir()
         (ssh_dir / "config").write_text("Host h\n    Hostname h.example\n")
+        # The main config `Include`s this one, so a missing node file breaks ssh just as
+        # surely as a missing host block — one row covers both.
+        (ssh_dir / "tillicum-node-config").write_text("Host tillicum-node\n")
         runner = FakeRunner({"id -un": "deanlcs\n", "test -d": "yes"})
         rows = {c.name: c for c in healthcheck(cluster, manager, {}, runner, envrc=envrc,
                                                env=good_env, ssh_dir=ssh_dir)}
@@ -1026,6 +1060,44 @@ if test():
         sends = [c for c in sent if c.name == "notify send"]
         assert {c.where for c in sends} == {LAPTOP, login_node(cluster)}
         assert all(c.ok for c in sends)
+
+
+# %%
+if test():
+    # `poe init` produces ONE report. What it created is folded into the row about that
+    # thing, and a creation that failed says nothing at all — the check that follows is
+    # already about to say the login node is unreachable, in one line instead of ssh's four.
+    with tempfile.TemporaryDirectory() as tmp:
+        envrc, ssh_dir = Path(tmp) / ".envrc", Path(tmp) / "ssh"
+
+        class _NoLogin(FakeRunner):
+            def __call__(self, command, stdin=None):
+                self.commands.append(command)
+                raise RemoteError(command, "ssh_askpass: exec(...): No such file or "
+                                           "directory\nPermission denied (gssapi-keyex).")
+
+        runner = _NoLogin()
+        notes = init(ClusterConfig(login_host="h"), manager, {}, runner,
+                     envrc=envrc, ssh_dir=ssh_dir)
+        # It tried, and said nothing about failing.
+        assert runner.asked("mkdir -p")
+        assert not any(name == "run root" for _, name in notes)
+        assert "just created" in notes[(LAPTOP, ".envrc")]
+        # A note must never land on a row of the same name somewhere else: three machines
+        # each have an `.envrc`, and only one of them was touched here.
+        assert all(where == LAPTOP for where, _ in notes)
+
+        rows = healthcheck(ClusterConfig(login_host="h"), manager, {}, runner, envrc=envrc,
+                           env={}, ssh_dir=ssh_dir, created=notes)
+        by_name = {c.name: c for c in rows}
+        # The note rides along inside the row it is about, not in a section above it.
+        assert "just created" in by_name[".envrc"].detail
+        assert "appended" in by_name["ssh config"].detail
+        # One voice on the unreachable login node, and it is not ssh's.
+        assert by_name["reachable"].detail == "not authenticated"
+        assert by_name["run root"].ok is None
+        assert "ssh_askpass" not in render(rows)
+        display(render(rows))
 
 
 # %%

@@ -146,9 +146,14 @@ for kind, cfg in agent_configs.items():
 # %% [markdown]
 # ## 1. `poe init` — create the local footprint
 #
-# A **Creating** block and a **Checking** block, both grouped by machine. There is no
-# separate inventory: the headings of the report are the inventory — one per place, and one
-# per `agents/<kind>.yaml` naming its repo, ref and workdir.
+# One report, grouped by machine, and that is the whole output. `init` creates what it can
+# and then says nothing itself; what exists afterwards is the report's to state, and what
+# it just created rides along inside the row about that thing as a `·` note. So a file it
+# could not create is not announced twice — once in ssh's words and once, correctly, as the
+# row that says the login node is unreachable.
+#
+# There is no separate inventory either: the headings are the inventory — one per place,
+# one per `agents/<kind>.yaml` naming its repo, ref and workdir.
 #
 # What it creates, and where:
 #
@@ -165,7 +170,7 @@ for kind, cfg in agent_configs.items():
 # holds — and any key that is only read on the cluster is written **commented out**, with
 # the remote path it belongs in beside it. Filling one of those in here changes nothing.
 #
-# Then it runs a **full** healthcheck, which really sends mail and Slack.
+# Then it checks everything — the **full** tier, which really sends mail and Slack.
 #
 # **Expect this to fail the first time**, and read the failure rather than fixing it
 # blind — the `.envrc` it just wrote is full of `<secret-here>`.
