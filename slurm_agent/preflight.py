@@ -189,72 +189,6 @@ def print_report(checks: list[Check]) -> None:
     _console().print(report(checks))
 
 
-def inventory(cluster: ClusterConfig, manager: ManagerConfig,
-              agents: dict[str, AgentConfig]):
-    """What this clone manages, and where each piece lives. Shown before anything runs.
-
-    This is the answer to "how does it know which repos it manages": it reads
-    `agents/*.yaml`, one file per agent, and nothing else. Add a file and it manages
-    another repo; there is no registry and nothing remembered between runs.
-    """
-    tree = Tree("[bold]This clone manages[/]", guide_style="dim")
-
-    laptop = tree.add(f"[bold cyan]{LAPTOP}[/]  [dim]{Path.cwd()}[/]")
-    laptop.add(Text.from_markup(
-        "[dim].envrc here holds only YOUR keys, for reaching you:[/]\n"
-        + (", ".join(manager.requires_env) or "[dim]none declared[/]")))
-
-    login = tree.add(f"[bold cyan]the login node[/]  [dim]{cluster.login_host}[/]")
-    login.add(Text.from_markup(
-        f"[dim]run root[/] {cluster.run_root}\n"
-        f"[dim]allocations held in[/] {cluster.allocation_mode}\n"
-        "[dim]no .envrc lives here[/]"))
-
-    if not agents:
-        tree.add("[bold cyan]staged repos[/]  [dim]none — add an agents/<kind>.yaml[/]")
-        return tree
-
-    staged = tree.add(f"[bold cyan]staged repos[/]  "
-                      f"[dim]{len(agents)}, one per agents/<kind>.yaml[/]")
-    for kind, agent in agents.items():
-        node = staged.add(f"[bold]agents/{kind}.yaml[/]")
-        node.add(Text.from_markup(
-            f"{agent.repo}[dim]@[/]{agent.ref}\n"
-            f"[dim]staged at[/] {cluster.login_host}:{agent.workdir}\n"
-            f"[dim].envrc THERE needs:[/] "
-            + (", ".join(agent.requires_env) or "[dim]nothing[/]")))
-    return tree
-
-
-def render_inventory(cluster: ClusterConfig, manager: ManagerConfig,
-                     agents: dict[str, AgentConfig]) -> str:
-    """The inventory as plain text."""
-    return _export(inventory(cluster, manager, agents))
-
-
-def print_inventory(cluster: ClusterConfig, manager: ManagerConfig,
-                    agents: dict[str, AgentConfig]) -> None:
-    """The inventory, in colour, to the terminal."""
-    _console().print(inventory(cluster, manager, agents))
-
-
-# %%
-if test():
-    inv = render_inventory(ClusterConfig(login_host="tillicum-login"),
-                           ManagerConfig(requires_env=["SLURM_AGENT_SMTP_HOST"]), {
-        "experiment-runner": AgentConfig(repo="DeanLight/baselines", ref="claude/exp14",
-                                         workdir="~/work/baselines", log_dir="experiments",
-                                         max_budget_usd=8, requires_env=["HF_TOKEN"]),
-    })
-    # It must name the FILE, because that is the whole answer to "how does it know?".
-    assert "agents/experiment-runner.yaml" in inv
-    assert "DeanLight/baselines@claude/exp14" in inv
-    # And it must say which .envrc HF_TOKEN belongs in — the one on the cluster, not here.
-    assert "tillicum-login:~/work/baselines" in inv
-    assert "HF_TOKEN" in inv.split(".envrc THERE needs:")[1]
-    display(inv)
-
-
 # %% [markdown]
 # ## Creating
 
@@ -570,11 +504,14 @@ def healthcheck(cluster: ClusterConfig, manager: ManagerConfig,
         # the usual cause of "everything is broken", and it costs one second to rule out.
         checks.append(Check(name="reachable", ok=reachable, where=login,
                             detail=f"answered as {who}" if reachable else "no answer",
-                            fix="re-auth: `ssh " + cluster.login_host + "`"))
+                            fix=f"open a terminal and run `ssh {cluster.login_host}`, "
+                                "answer 2FA, and leave that session open"))
     except RemoteError as exc:
         reachable = False
-        checks.append(Check(name="reachable", ok=False, detail=str(exc), where=login,
-                            fix=f"re-auth: `ssh {cluster.login_host}`"))
+        checks.append(Check(name="reachable", ok=False, where=login,
+                            detail=ssh_reason(str(exc)),
+                            fix=f"open a terminal and run `ssh {cluster.login_host}`, "
+                                "answer 2FA, and leave that session open"))
 
     if not reachable:
         # One broken link must not render as eight independent problems.
@@ -618,6 +555,34 @@ def healthcheck(cluster: ClusterConfig, manager: ManagerConfig,
     return checks
 
 
+# ssh is loud in the one case you least want noise: a failed auth repeats an askpass
+# warning once per attempt, then states the actual reason last. Reporting all of it buries
+# "you are not logged in" under four lines of a missing X11 binary that is not the problem
+# and that installing would not fix.
+SSH_REASONS = (
+    ("permission denied", "not authenticated"),
+    ("could not resolve", "host not found — check login_host in config/cluster.yaml"),
+    ("connection refused", "connection refused"),
+    ("connection timed out", "timed out — are you on a network that can reach it?"),
+    ("timed out after", "timed out"),
+    ("no route to host", "no route to host"),
+    ("operation timed out", "timed out"),
+)
+
+
+def ssh_reason(detail: str) -> str:
+    """One line for why ssh failed, out of however many ssh chose to print."""
+    lowered = detail.lower()
+    for needle, reason in SSH_REASONS:
+        if needle in lowered:
+            return reason
+    # Unrecognised: keep ssh's own last meaningful line rather than inventing a summary,
+    # but drop the askpass repetition, which is never the cause.
+    lines = [ln.strip() for ln in detail.splitlines()
+             if ln.strip() and not ln.strip().startswith("ssh_askpass:")]
+    return (lines[-1] if lines else detail.strip())[:120]
+
+
 def _ssh_config_check(ssh_dir: Path | None, cluster: ClusterConfig) -> Check:
     """Is the login host defined in ~/.ssh/config? Local, instant, and the usual first gap.
 
@@ -637,14 +602,17 @@ def _ssh_config_check(ssh_dir: Path | None, cluster: ClusterConfig) -> Check:
 
 
 def _envrc_check(envrc: Path) -> Check:
+    # Absolute, because this row is the one that says WHICH checkout the report is about —
+    # the alternative was a heading repeating a path this row already carries.
+    shown = envrc if envrc.is_absolute() else Path.cwd() / envrc
     if not envrc.exists():
-        return Check(name=".envrc", ok=False, detail=f"{envrc} missing", fix="poe init")
+        return Check(name=".envrc", ok=False, detail=f"{shown} missing", fix="poe init")
     mode = stat.S_IMODE(envrc.stat().st_mode)
     if mode & 0o077:
         # A shared filesystem makes a group-readable app-password the real exposure.
-        return Check(name=".envrc", ok=False, detail=f"{envrc} is {oct(mode)}",
+        return Check(name=".envrc", ok=False, detail=f"{shown} is {oct(mode)}",
                      fix=f"chmod 600 {envrc}")
-    return Check(name=".envrc", ok=True, detail=f"{envrc} present at 0600")
+    return Check(name=".envrc", ok=True, detail=f"{shown} present at 0600")
 
 
 def _tmux(run: Runner, *, where: str = LAPTOP) -> Check:
@@ -706,7 +674,8 @@ def _github_access(runner: Runner, repos: list[str], where: str, *,
                     "credential store"))
             continue
         checks.append(Check(name=name, ok=True, where=where,
-                            detail=f"readable, {len(refs)} branches "
+                            detail=f"readable, {len(refs)} "
+                                   f"branch{'es' if len(refs) != 1 else ''} "
                                    "[dim](read only — a public repo answers this without "
                                    "a credential)[/]"))
         if push:
@@ -795,7 +764,7 @@ def _remote_envrc(run: Runner, cluster: ClusterConfig,
         checks.append(Check(
             name=".envrc", ok=secure and not absent, where=where,
             detail=f"mode {mode}" + (f", missing {', '.join(absent)}" if absent
-                                     else ", every declared key set"),
+                                     else f", set: {', '.join(agent.requires_env)}"),
             fix=None if secure and not absent else
             f"ssh {cluster.login_host} 'chmod 600 {path}' and fill in the keys",
         ))
@@ -1057,6 +1026,25 @@ if test():
         sends = [c for c in sent if c.name == "notify send"]
         assert {c.where for c in sends} == {LAPTOP, login_node(cluster)}
         assert all(c.ok for c in sends)
+
+
+# %%
+if test():
+    # The real thing ssh printed when a login node had not been authenticated to: four
+    # lines about a missing X11 binary that is neither the cause nor fixable, and the
+    # reason last. Reporting all of it buries the one sentence that matters.
+    noisy = ("'id -un' failed: ssh_askpass: exec(/usr/X11R6/bin/ssh-askpass): No such "
+             "file or directory\nssh_askpass: exec(/usr/X11R6/bin/ssh-askpass): No such "
+             "file or directory\nssh_askpass: exec(/usr/X11R6/bin/ssh-askpass): No such "
+             "file or directory\ndeanlcs@tillicum.hyak.uw.edu: Permission denied "
+             "(gssapi-keyex,gssapi-with-mic,keyboard-interactive).")
+    assert ssh_reason(noisy) == "not authenticated"
+    assert ssh_reason("ssh: Could not resolve hostname x") .startswith("host not found")
+    assert ssh_reason("timed out after 60s") == "timed out"
+    # Unrecognised failures keep ssh's own last word rather than an invented summary —
+    # but never the askpass repetition, which is never the cause.
+    odd = "ssh_askpass: exec(...): No such file\nkex_exchange_identification: bad banner"
+    assert ssh_reason(odd) == "kex_exchange_identification: bad banner"
 
 
 # %%

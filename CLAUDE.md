@@ -51,7 +51,12 @@ an agent. That rule is what makes a closed laptop lossless and two sessions agre
   is empty on purpose. A hand-kept list is wrong in both directions, and the quiet
   direction is the dangerous one: turn Slack on without updating it and `hc` passes while
   the escalation never arrives. A key with a default (`SMTP_PORT`) is reported, never
-  failed.
+  failed. Optional means OFF: `config/notify.yaml` ships `channels: [email]`, because a
+  channel that is on but cannot send is worse than one that is off — you find out when
+  nothing arrives.
+- **The report is the only summary.** There is no inventory block printed alongside it: the
+  group headings already name every place and every managed repo, and a second rendering of
+  the same facts is a second thing to keep true and a second thing to disagree.
 - **`agents/*.yaml` IS the list of managed repos.** One file per agent, naming repo, ref and
   workdir. That is the whole registry, and it follows from the one rule: nothing is
   remembered between runs, so delete the file and the repo is no longer managed.

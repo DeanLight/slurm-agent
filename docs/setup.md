@@ -34,7 +34,8 @@ So `HF_TOKEN` is never a laptop problem, and `poe hc` does not ask the laptop fo
 **How it knows which repos it manages:** it reads `agents/*.yaml`, one file per agent, and
 nothing else. Each file names a repo, a ref and the workdir it is staged into — that is the
 whole list. No registry, nothing remembered between runs; delete a file and it stops
-managing that repo. `poe init` prints the list before doing anything.
+managing that repo. You never ask separately: the report heads one group per agent, so
+the list is wherever the answer is needed.
 
 **Every shipped agent points at this repo and declares no keys**, so a fresh clone or fork
 is green once you have filled in your own SMTP and Slack keys, with nothing staged yet.
@@ -80,11 +81,11 @@ For email you want an **app password**, not your account password. For Slack you
 [incoming webhook](https://api.slack.com/messaging/webhooks) URL.
 
 **You only need the keys for the channels you turned on.** `config/notify.yaml`'s
-`channels` is what decides — drop `slack` from it and the webhook stops being required;
-add it and the webhook starts being required, which is the direction that matters, since
-a channel switched on without its key would otherwise pass the healthcheck and silently
-deliver nothing. `SLURM_AGENT_SMTP_PORT` has a default of 587, so `poe hc` reports it as
-defaulted rather than missing.
+`channels` is what decides, and it ships as `[email]` — Slack is off, so its webhook is not
+required until you add `slack` to that list. That is what optional means here: a channel
+that is on but cannot send is worse than one that is off, because you only find out when
+nothing arrives. `SLURM_AGENT_SMTP_PORT` has a default of 587, so `poe hc` reports it as
+defaulted rather than missing, never failed.
 
 ## A different `.envrc` per staged repo, on Tillicum
 

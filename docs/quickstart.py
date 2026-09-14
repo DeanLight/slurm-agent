@@ -69,8 +69,8 @@
 # It reads `agents/*.yaml`, one file per agent, and nothing else. Each file names a repo,
 # a ref and the workdir it is staged into — and that is the entire list. There is no
 # registry, nothing remembered between runs, and nothing to deregister: delete the file
-# and it stops managing that repo. `poe init` prints the list before it does anything, and
-# the next cell prints it on its own.
+# and it stops managing that repo. You never have to ask separately: every report below
+# heads one group per agent, so the list is wherever the answer is needed.
 #
 # **Every agent shipped here points at this repo**, on purpose. A fork should be able to
 # run its whole sanity check without access to anything else, and the one repo a fork can
@@ -133,27 +133,22 @@ def sh(cmd: str, *, timeout: int = 900, quiet: bool = False) -> subprocess.Compl
 
 print(f"repo root: {ROOT}")
 
-# %% [markdown]
-# ## 0b. What this clone manages
-#
-# Read this before running anything. It is the whole inventory: your laptop, the login
-# node, and one staged repo per `agents/<kind>.yaml`. Every `MISSING` row you see later
-# belongs to exactly one of these lines.
-
 # %%
-from slurm_agent import preflight  # noqa: E402
-from slurm_agent.config import ClusterConfig, ManagerConfig, load, load_agents  # noqa: E402
+# The agent configs, keyed by kind. This IS the list of repos this clone manages — there is
+# no registry behind it, and later cells read the smoke agents' branch straight out of it
+# rather than repeating it.
+from slurm_agent.config import load_agents  # noqa: E402
 
-cluster = load("config/cluster.yaml", ClusterConfig)
-manager = load("config/manager.yaml", ManagerConfig)
 agent_configs = load_agents()
-preflight.print_inventory(cluster, manager, agent_configs)
+for kind, cfg in agent_configs.items():
+    print(f"agents/{kind}.yaml  {cfg.repo}@{cfg.ref}  ->  {cfg.workdir}")
 
 # %% [markdown]
 # ## 1. `poe init` — create the local footprint
 #
-# It prints the inventory again, then a **Creating:** block and a **Checking:** block, both
-# grouped by machine.
+# A **Creating** block and a **Checking** block, both grouped by machine. There is no
+# separate inventory: the headings of the report are the inventory — one per place, and one
+# per `agents/<kind>.yaml` naming its repo, ref and workdir.
 #
 # What it creates, and where:
 #
@@ -199,12 +194,12 @@ sh("uv run poe init")
 # For email you want an **app password**, not your account password. For Slack you want an
 # [incoming webhook](https://api.slack.com/messaging/webhooks) URL.
 #
-# **Only the channels you turned on need keys.** `config/notify.yaml`'s `channels` decides:
-# drop `slack` and the webhook stops being required; add it and the webhook starts being
-# required. That second direction is the one worth having — a channel switched on without
-# its key would otherwise pass the healthcheck and then silently deliver nothing at the
-# moment an agent needed a human. `SLURM_AGENT_SMTP_PORT` has a default of 587, so it is
-# reported as defaulted rather than missing.
+# **Only the channels you turned on need keys.** `config/notify.yaml`'s `channels` decides,
+# and it ships as `[email]` — so Slack's webhook is not required until you add `slack` to
+# that list. That is what optional means here: a channel that is on but cannot send is
+# worse than one that is off, because you only find out when nothing arrives.
+# `SLURM_AGENT_SMTP_PORT` has a default of 587, so it is reported as defaulted, never
+# failed.
 #
 # The fast healthcheck below says which keys are still placeholders, under the heading of
 # the machine each is read on. It creates nothing, prints names only, and reads values from

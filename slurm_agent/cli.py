@@ -106,9 +106,9 @@ def init(send: bool = True) -> None:
     from rich.rule import Rule
 
     console = Console()
-    # What this clone manages, BEFORE anything is created — so the report that follows
-    # reads as "this place, that place" rather than a flat list of unattributed failures.
-    preflight.print_inventory(cluster, manager, agents)
+    # Created first, then checked — and only the check produces a report. An inventory
+    # printed beforehand said the same things the report's own headings say, so it was a
+    # second place to keep true and a second place to disagree.
     console.print(Rule("[bold]Creating[/]", align="left", style="dim"))
     preflight.print_report(preflight.init(cluster, manager, agents, run))
     console.print(Rule("[bold]Checking[/]", align="left", style="dim"))
