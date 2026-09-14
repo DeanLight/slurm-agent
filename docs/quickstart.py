@@ -20,7 +20,7 @@
 # Run this once, on the laptop, the first time you set this repo up on a machine — and
 # again whenever you doubt it. It walks the whole path in order:
 #
-# 1. `poe init` — create the local footprint
+# 1. `poe init` — create the local footprint, and get one report of everything
 # 2. fill `.envrc`, then `poe hc --full --send` — prove every wire carries current
 # 3. one allocation, and **two** agents on it: one **interactive**, one **batch**
 # 4. watch both from here: progress, spend, and the supervisor's decisions
@@ -55,14 +55,18 @@
 #
 # | Place | What lives there | What its `.envrc` holds |
 # |---|---|---|
-# | **This laptop** | this checkout, `~/.ssh/config`, the supervision loop | the keys for **reaching you** — SMTP, Slack |
-# | **The login node** | the run root, `tmux`, your Claude credential | nothing — no `.envrc` here at all |
-# | **Each staged repo on the cluster** | the repo an agent runs in | the keys **that agent** declares, e.g. `HF_TOKEN` |
+# | **This laptop** | this checkout, `~/.ssh/config`, the supervision loop | the keys for **reaching you** — whatever `config/notify.yaml`'s channels need, SMTP by default |
+# | **The login node** | the run root, `tmux`, your Claude credential, its own git credential | nothing — no `.envrc` here at all |
+# | **Each staged repo on the cluster** | the repo one agent runs in | the keys **that agent** declares, e.g. `HF_TOKEN` |
 #
-# So `HF_TOKEN` is never a laptop problem. `poe init` writes your laptop's `.envrc` with
-# keys like that **commented out**, naming the remote path each belongs in instead, and
-# `poe hc` checks each key against the machine that actually reads it. Every row in every
-# report below sits under a heading naming its machine.
+# So a key like `HF_TOKEN` is never a laptop problem. `poe hc` checks each key against the
+# machine that actually reads it, and every row of every report below sits under a heading
+# naming its machine.
+#
+# None of the agents shipped here declare any keys, so out of the box that third column is
+# empty and there is nothing to do on the cluster. When one of yours does declare a key,
+# `poe init` writes it into your laptop's `.envrc` **commented out**, with the remote path
+# it belongs in beside it — filling it in here would change nothing.
 #
 # ### How it knows which repos it manages
 #
@@ -81,8 +85,9 @@
 # ## What it will cost
 #
 # One GPU for well under an hour, and two agents capped at `$1` each by
-# `agents/smoke.yaml`. The cap is a runaway guard on list-priced tokens, not a bill — under
-# a subscription the real limit is your plan's usage window.
+# `agents/smoke.yaml` and `agents/smoke-batch.yaml`. The cap is a runaway guard on
+# list-priced tokens, not a bill — under a subscription the real limit is your plan's
+# usage window.
 
 # %% [markdown]
 # ## 0. The harness
@@ -158,8 +163,10 @@ for kind, cfg in agent_configs.items():
 # What it creates, and where:
 #
 # * **on this laptop** — `.envrc` at mode 0600, and the ssh host entries appended to
-#   `~/.ssh/config` between markers;
-# * **on the login node** — the run root.
+#   `~/.ssh/config` between markers (the `.envrc` and `ssh config` rows);
+# * **on the login node** — the run root every agent's files live under (the `run root`
+#   row). If it cannot reach the login node it says nothing about it: the `run root` row is
+#   about to say the same thing, better.
 #
 # It never overwrites. An existing `.envrc` is kept as-is. A `tillicum-login` you defined
 # yourself means the ssh block is skipped entirely — your other clusters and servers are
@@ -170,7 +177,8 @@ for kind, cfg in agent_configs.items():
 # holds — and any key that is only read on the cluster is written **commented out**, with
 # the remote path it belongs in beside it. Filling one of those in here changes nothing.
 #
-# Then it checks everything — the **full** tier, which really sends mail and Slack.
+# Then it checks everything — the **full** tier, which really sends a message on every
+# channel `config/notify.yaml` turns on, from both machines.
 #
 # **Expect this to fail the first time**, and read the failure rather than fixing it
 # blind — the `.envrc` it just wrote is full of `<secret-here>`.
@@ -181,9 +189,10 @@ sh("uv run poe init")
 # %% [markdown]
 # ## 2. Fill in **this laptop's** `.envrc`
 #
-# Only the keys under `this laptop` in the report — the ones `config/manager.yaml`
-# declares, for reaching you. The commented-out ones are not yours to fill in here; they
-# belong to a staged repo, and step 2b is where those go.
+# Only the keys the report lists under `this laptop` — the ones the channels you turned on
+# need, for reaching you. Anything written **commented out** is not yours to fill in here:
+# it belongs to a staged repo on the cluster, and §2b is where those go. Out of the box
+# there are none, because no shipped agent declares a key.
 #
 # `.envrc` is gitignored and holds the real values; the YAML names **keys** and nothing
 # committed here ever holds a value.
@@ -217,27 +226,28 @@ sh("uv run poe hc")
 # %% [markdown]
 # ## 2b. The other `.envrc`s — one per staged repo, on the cluster
 #
-# A different file, on a different machine, holding different keys. It lives beside the
-# repo an agent runs in, and it holds exactly what that agent's `requires_env` declares —
-# `HF_TOKEN` and friends, plus the notification keys if you want that agent to reach you
-# from the compute node.
+# **Nothing to do here today — skip to §3.** Every agent shipped with this repo declares
+# `requires_env: []`, so all three staged-repo rows read `declares no keys — nothing needed
+# here`. That is deliberate twice over: a sanity check that needs a credential has two
+# extra ways to fail, and an example that demands a token turns a correctly-set-up laptop
+# red over a file its owner has no reason to have created.
 #
-# The report names the exact path in its heading, so there is nothing to work out. For
-# `agents/experiment-runner.yaml` that is:
+# It matters the moment one of *your* agents declares a key. Then it needs a different
+# file, on a different machine, holding different keys: one beside the repo that agent runs
+# in, containing exactly what its `requires_env` names — plus the notification keys if you
+# want that agent to reach you from the compute node.
+#
+# You never work the path out. The report prints it in the heading above the row, and the
+# row's `fix:` is the command. It looks like this:
 #
 # ```bash
-# scp templates/envrc.example tillicum-login:~/work/deepreasoner-baselines/.envrc
-# ssh tillicum-login 'chmod 600 ~/work/deepreasoner-baselines/.envrc'
+# scp templates/envrc.example tillicum-login:<the workdir in the heading>/.envrc
+# ssh tillicum-login 'chmod 600 <that path>'
 # ssh tillicum-login    # then $EDITOR it there
 # ```
 #
 # `poe hc` checks that file's **mode** too, and fails loudly at 0644 — Tillicum's
 # filesystem is shared, and a group-readable app password is the real exposure here.
-#
-# **Both smoke agents declare no keys at all**, on purpose: a sanity check that needs a
-# credential has two extra ways to fail. So you can skip this step for the trial runs
-# below and come back to it before launching a real experiment agent — their rows will
-# read `declares no keys — nothing needed here`.
 
 # %% [markdown]
 # ### And Claude, logged in on the cluster
@@ -257,10 +267,12 @@ sh("uv run poe hc")
 # ## 3. `poe hc --full --send` — every wire carries current
 #
 # `hc` alone is the fast one: run it after moving network or re-authing, when a dropped
-# `ControlMaster` is the usual culprit. `--full` adds the slow proofs — a real allocation
-# probe and a real headless Claude call. `--send` really delivers a test message from your
-# laptop *and* from Tillicum, which are two different egress paths and neither stands in
-# for the other.
+# `ControlMaster` is the usual culprit. `--full` adds the three slow proofs — a real
+# allocation that must outlive the ssh that asked for it, a real headless Claude call that
+# must report a non-zero cost, and a `--dry-run` push from each machine that proves **write**
+# access rather than just read. `--send` really delivers a test message from your laptop
+# *and* from Tillicum, which are two different egress paths and neither stands in for the
+# other.
 #
 # Read it by group. `MISSING` under `this laptop` is something you fix here; under a
 # `staged repo · …` heading it is something you fix over ssh, at the path in the heading.
@@ -495,14 +507,16 @@ sh("uv run poe flush --older-than 0d --dry-run")
 # %% [markdown]
 # ## What this proved, and what it did not
 #
-# | Proved | How |
+# | Proved | The row, or the step |
 # |---|---|
-# | Git can reach the repo from both machines | the `github …` rows, on the laptop and the login node |
-# | It can **push**, not just read | `hc --full`'s `--dry-run` push probe |
-# | The local footprint is real | `poe init` created `.envrc` at 0600 and appended ssh hosts without clobbering |
-# | Every declared key is filled | `poe hc` reads names from YAML, values from `.envrc` |
-# | You can be reached | `--send` really delivered, from the laptop **and** from Tillicum |
-# | Claude works headlessly there, and costs something | `hc --full` asserts `total_cost_usd > 0` |
+# | The local footprint is real | `.envrc` at 0600 and `ssh config`, each carrying a `·` note saying what `init` did |
+# | ssh reaches the login node | `reachable` |
+# | Every key a live channel needs is filled | `my keys`, which demands only what `config/notify.yaml` turns on |
+# | You can be reached | `notify send` under **both** headings — `--send` really delivered from each |
+# | Git can reach the repo from both machines | the `github …` rows, one per heading |
+# | It can **push**, not just read | `github … push`, from `hc --full`'s `--dry-run` probe |
+# | Claude works headlessly there, and costs something | `agent credential` — `hc --full` asserts `total_cost_usd > 0` |
+# | An allocation outlives the ssh that asked for it | `allocation probe`, in the mode you configured |
 # | An allocation comes up and is attachable | `job-up`, and the `attach:` line it printed |
 # | Staging refuses to launch onto a dirty tree | `agent-run` preflighted before spending |
 # | The interactive path works end to end | `SMOKE-interactive` pushed a notebook |
@@ -510,22 +524,28 @@ sh("uv run poe flush --older-than 0d --dry-run")
 # | Progress and spend are visible from here | `agent-status`, `agent-logs --cells`, `status` |
 # | The supervisor decides and records | `agent-watch --once` |
 #
-# The only thing left that `hc` still cannot see is what an agent does with all of that.
-#
-# It did **not** prove that a kill or a lease renewal works — the smoke agents finish in
-# two minutes, long before any threshold fires — nor that a real experiment agent's
-# `requires_env` are present on the cluster, since the smoke agent declares none.
+# It did **not** prove that a kill or a lease renewal works: the smoke agents finish in two
+# minutes, long before any supervision threshold fires. And it proved nothing about a
+# cluster-side `.envrc`, because no shipped agent declares a key — the first agent of yours
+# that does is the first time those rows say anything.
 #
 # ## When something fails
+#
+# Every row says which machine it is about, so the first question — *where do I fix this?*
+# — is answered by the heading it sits under.
 #
 # | Symptom | Where to look |
 # |---|---|
 # | A cell hangs, then times out | The authenticated ssh session died. Re-open it; re-run. |
-# | `hc` shows `SKIPPED` rows | The cluster was unreachable. A skip is never a pass. |
-# | `notify send (tillicum)` MISSING | The cluster-side `.envrc` — mode and keys, not the laptop's. |
+# | `reachable` MISSING, `not authenticated` | Open a terminal, `ssh tillicum-login`, answer 2FA, leave it open. |
+# | Everything behind it `SKIPPED` | That is the point: one broken link, not eight problems. A skip is never a pass. |
+# | `my keys` MISSING | Fill them in *this laptop's* `.envrc`. It only ever asks for the channels you turned on. |
+# | `notify send` MISSING under the login node | The cluster could not send — a different egress path from your laptop's. |
 # | `agent credential` MISSING | `ssh tillicum-login` and run `claude` once, interactively. |
-# | Launch refuses: dirty workdir | Something wrote inside the staged repo. Nothing this repo writes should. |
-# | Agent stuck at `needs_human` | `poe agent-status` names what it is waiting on. |
 # | `github …` MISSING | That machine has no git credential for the repo. `gh auth login` there, or a PAT in git's credential store. |
 # | `github … push` MISSING | It can read but not write. The credential needs the repo scope. |
+# | `clone` says `not cloned yet` | Not a fault. A workdir is created by the first launch, not by setup. |
+# | `clone` names a different repo | That workdir was staged from an older `repo:`. The `fix:` says how. |
+# | `worktree` MISSING | Something is uncommitted in the staged repo, and a launch will refuse it. |
+# | Agent stuck at `needs_human` | `poe agent-status` names what it is waiting on. |
 # | Batch job never leaves `PENDING` | `poe status`. The queue is the queue; that is not a failure. |
