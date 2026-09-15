@@ -130,10 +130,13 @@ def test_the_quick_start_only_talks_to_claude_after_setup():
             f"the quick start still runs {command} itself"
     assert "poe hc --full --send" in src, "it must still prove the machines"
     assert "you only talk to Claude" in src
-    # The two asks: open the tasks, then run them. The second must carry the ids from the
-    # first, which is the whole shape the human asked for.
-    assert "uv run poe ask" in src
+    # The two sessions: open the tasks, then run them. The second must carry the ids from
+    # the first, which is the whole shape the human asked for.
+    assert src.count("claude -p") >= 3
     assert "extract_ids(" in src and "{TASK_A} and {TASK_B}" in src
+    # And it must be the REAL command, not a wrapper: what the notebook runs has to be what
+    # you would type in a terminal, or the notebook proves something you cannot repeat.
+    assert "poe ask" not in src and "slurm-agent ask" not in src
 
 
 def test_the_manager_skill_grounds_work_in_notion():
@@ -162,3 +165,68 @@ def test_the_agent_brief_reads_and_updates_its_task():
     # And it must refuse rather than guess, because working under the wrong row files real
     # effort against someone else's record.
     assert "cannot find {{ task }} in Notion" in brief
+
+
+def test_running_claude_from_the_repo_root_is_enough_to_be_the_manager():
+    """No wrapper configures the session. The repo does, where Claude Code looks.
+
+    `claude` from this root has to come up as the manager on its own, because that is what
+    a human types and what every doc now shows. Three files make it so, and each is silent
+    when missing: `.mcp.json` (Notion reachable), `.claude/settings.json` (enabled without
+    a prompt, and `poe` pre-approved), and `CLAUDE.md` (what it is for).
+    """
+    import json
+
+    mcp = json.loads((ROOT / ".mcp.json").read_text())
+    assert "notion" in mcp["mcpServers"], "the manager could not open a task"
+
+    settings = json.loads((ROOT / ".claude" / "settings.json").read_text())
+    assert settings.get("enableAllProjectMcpServers") is True, \
+        "the servers would need approving by hand on every fresh clone"
+    allow = settings["permissions"]["allow"]
+    assert any("poe" in rule for rule in allow), "it drives this repo through poe"
+
+    claude_md = (ROOT / "CLAUDE.md").read_text()
+    assert "you are the manager" in claude_md.lower()
+    assert "slurm-orchestration/SKILL.md" in claude_md
+
+
+def test_the_repo_config_holds_no_secrets_and_protects_the_one_file_that_does():
+    """Both JSONs are committed. `.envrc` is the only local file with real values in it."""
+    import json
+
+    for name in (".mcp.json", ".claude/settings.json"):
+        text = (ROOT / name).read_text()
+        for marker in ("ghp_", "sk-ant", "xoxb-", "Bearer ", "PASSWORD", "TOKEN="):
+            assert marker not in text, f"{name} looks like it carries a credential"
+
+    deny = json.loads((ROOT / ".claude" / "settings.json").read_text())["permissions"]["deny"]
+    assert any(".envrc" in rule for rule in deny), \
+        "the manager has no reason to read secrets; poe puts them in the environment for it"
+
+
+def test_the_quick_starts_bash_actually_parses_as_a_shell_command():
+    """The commands are the deliverable now, so they must be right, not just look right.
+
+    An apostrophe in a prompt — "what it's doing" — ends the single-quoted string and the
+    rest becomes shell syntax. That fails in a way that reads like Claude misbehaving
+    rather than like a quoting bug, so it is worth catching here.
+    """
+    import re
+    import shlex
+
+    src = (ROOT / "docs" / "quickstart.py").read_text()
+    sessions = []
+    for match in re.finditer(r'sh\(\s*f?"""(.*?)"""', src, re.S):
+        command = match.group(1)
+        if "claude" not in command:
+            continue
+        words = shlex.split(command.replace("{TASK_A}", "TASK-118")
+                                   .replace("{TASK_B}", "TASK-119"))
+        assert words[:2] == ["claude", "-p"], words[:2]
+        assert len(words) == 3, f"the prompt split into pieces: {words}"
+        sessions.append(words[2])
+
+    assert len(sessions) == 3, f"expected three sessions, found {len(sessions)}"
+    # The second must carry the ids the first produced.
+    assert "TASK-118" in sessions[1] and "TASK-119" in sessions[1]

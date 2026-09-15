@@ -19,8 +19,9 @@ tasks on Tillicum, keep me posted on progress and spend"* —
 `.claude/skills/slurm-orchestration/SKILL.md` auto-loads and takes the whole job: opening
 the Notion tasks, sizing the compute, launching, supervising, reporting, and tearing down.
 
-`poe ask "…"` is the same manager from a script or a notebook. Its reply is stdout and
-nothing else, so one ask can feed the next.
+`claude -p "…"` is the same manager from a script or a notebook — the same command, just
+printing its reply and exiting. `--output-format` defaults to `text`, so stdout is the
+reply and `IDS=$(claude -p '…')` feeds one session into the next.
 
 ```bash
 poe nb             # pair the notebooks, including the quick start

@@ -313,79 +313,91 @@ assert hc.returncode == 0, "fix the MISSING rows above before spending a GPU-hou
 # %% [markdown]
 # ## 4. From here on, you only talk to Claude
 #
-# Setup is done. **Nothing below runs a `poe` command that does work** — every cell asks
-# the manager, and the manager decides what to run.
+# Setup is done. Everything below is a `claude` session started **in this repo root**, and
+# there is no wrapper around it — the command in each cell is exactly what you would type
+# in a terminal.
 #
-# `poe ask` is the same manager you get by opening Claude Code in this repo: same
-# `CLAUDE.md`, same `.claude/skills/slurm-orchestration/SKILL.md`, same tools. Its reply is
-# stdout and nothing else, so you can capture it, look at it, and put it into the next
-# thing you say.
+# It comes up as the manager because the repo says so, in the three files Claude Code reads
+# by itself:
 #
-# First: ask it to open the two tasks in Notion. Say what you want done in your own words —
-# it knows where the Tasks database is, because `config/tasks.yaml` says so.
+# | File | What it does |
+# |---|---|
+# | `CLAUDE.md` | Opens with *"if you are reading this, you are the manager"* and points at the skill |
+# | `.claude/skills/slurm-orchestration/SKILL.md` | The procedure: tasks, sizing, launching, supervising, teardown |
+# | `.mcp.json` + `.claude/settings.json` | Notion and GitHub reachable and pre-enabled, `poe` pre-approved, `.envrc` denied |
+#
+# So `claude` from this directory is the manager, and so is `claude -p "…"`. The only
+# difference is that `-p` prints its reply and exits, which is what makes it usable from a
+# shell: `--output-format` defaults to `text`, so **stdout is the reply**.
+#
+# First, ask it to open the two tasks. Say what you want in your own words.
 
 # %%
-def ask(prompt: str, *, timeout: int = 900) -> str:
-    """Say something to the manager; get its reply back as text.
-
-    `shlex.quote`, because a prompt is prose: apostrophes, quotes and newlines all belong
-    in it, and none of them may reach the shell as syntax.
-    """
-    import shlex
-
-    return sh(f"uv run poe ask {shlex.quote(prompt)}", timeout=timeout).stdout
-
-
-ids = ask("""Open two new tasks in our Notion Tasks database:
+ids = sh("""claude -p 'Open two new tasks in our Notion Tasks database:
   1. Add a retry with backoff to the dataset loader.
   2. Document the batch launch path in the README.
 
-Create them, then reply with the two task ids, one per line, and nothing else.""")
+Create them, then reply with the two task ids, one per line, and nothing else.'""",
+         timeout=900).stdout
 
 # %% [markdown]
 # Read the ids out of that reply. `extract_ids` takes exactly the number you asked for and
-# refuses otherwise — if the manager made one row, or three, or described what it would do
-# without doing it, that is a real disagreement about what happened, and guessing which ids
-# it meant would file real work under the wrong rows.
+# refuses otherwise — if it made one row, or three, or described what it would do without
+# doing it, that is a real disagreement about what happened, and guessing which ids it meant
+# would file real work under the wrong rows.
 
 # %%
 from slurm_agent.config import load  # noqa: E402
 from slurm_agent.tasks import TaskConfig, extract_ids  # noqa: E402
 
-tasks_cfg = load("config/tasks.yaml", TaskConfig)
-TASK_A, TASK_B = extract_ids(ids, tasks_cfg.id_pattern, 2)
-print(f"TASK_A = {TASK_A}\nTASK_B = {TASK_B}")
+TASK_A, TASK_B = extract_ids(ids, load("config/tasks.yaml", TaskConfig).id_pattern, 2)
+print(f"TASK_A={TASK_A}\nTASK_B={TASK_B}")
 
 # %% [markdown]
-# Now hand those ids back to the manager as the work to run. This is a **new session** — it
-# reads the tasks out of Notion itself, which is exactly what a remote agent will do, so an
-# id that is wrong fails here rather than after an allocation is up.
+# Now format those ids into a **new** session and give it the work. In a terminal this is
+# the same two lines, with the shell holding the ids for you:
 #
-# From this one sentence it will: check both machines with `poe hc --full`, decide the
+# ```bash
+# IDS=$(claude -p 'Open two tasks: … . Reply with the ids, one per line.')
+# echo "$IDS"
+# claude -p "Run $IDS on Tillicum. Tell me what each produced and what it cost."
+# ```
+#
+# The new session reads the tasks out of Notion itself — the same thing a remote agent will
+# do — so an id that is wrong fails here rather than after an allocation is up.
+#
+# From that one sentence it will: check both machines with `poe hc --full`, decide the
 # compute (two small tasks belong as two steps on **one** allocation — Tillicum permits one
 # interactive allocation, so a second job is not a tidier answer, it is an unavailable one),
 # write an agent config for each task, launch them, and report back.
 
 # %%
-print(ask(f"""Run {TASK_A} and {TASK_B} on Tillicum for me.
+print(sh(f"""claude -p 'Run {TASK_A} and {TASK_B} on Tillicum for me.
 
 Read each task in Notion to see what it asks for. Size the compute yourself.
-When you are done, tell me what each agent produced and what it cost.""", timeout=3600))
+When you are done, tell me what each agent produced and what it cost.'""",
+         timeout=3600).stdout)
 
 # %% [markdown]
-# Ask for an update whenever you want one, in the same way:
+# Ask for an update whenever you want one. Each `claude -p` is a fresh session, and that
+# costs nothing in accuracy: it re-derives everything from `squeue`, `sacct` and the run
+# roots on the cluster, because the laptop holds nothing it cannot rebuild.
 
 # %%
-print(ask(f"How are {TASK_A} and {TASK_B} doing, and what have they cost so far?"))
+print(sh(f"""claude -p 'How are {TASK_A} and {TASK_B} doing, and what have they cost so far?'""",
+         timeout=900).stdout)
 
 # %% [markdown]
-# When the work is done, the durable record is the Notion row — each agent writes its own
+# For a long run you would rather watch than poll, drop the `-p` and talk to it:
+#
+# ```bash
+# cd ~/src/slurm-agent && claude
+# > Run TASK-118 and TASK-119 on Tillicum. Keep me posted on progress and spend.
+# ```
+#
+# When the work is done the durable record is the Notion row — each agent writes its own
 # findings there — and the allocation is gone, because the manager drops it. Nothing is left
 # running and nothing is left to clean up by hand.
-#
-# If you ever want the raw view, the commands are all there (`poe status`,
-# `poe agent-status`, `poe agent-logs <session> --cells`, `poe job-down <name>`). But the
-# point of this repo is that you should not need them.
 
 # %% [markdown]
 # ## What this proved

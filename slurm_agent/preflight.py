@@ -552,7 +552,7 @@ def healthcheck(cluster: ClusterConfig, manager: ManagerConfig,
         # one is got. Failing here costs a few cents; failing at launch costs the
         # allocation that was brought up for the work.
         if tasks is not None:
-            checks.append(_task_database(local or local_runner(timeout=300), manager, tasks))
+            checks.append(_task_database(local or local_runner(timeout=300), tasks))
     if full and reachable:
         checks.append(_allocation_probe(run, cluster))
         checks.append(_agent_credential(run, where=login))
@@ -873,21 +873,20 @@ def _allocation_probe(run: Runner, cluster: ClusterConfig) -> Check:
                      fix="try the other allocation_mode in config/cluster.yaml")
 
 
-def _task_database(run: Runner, manager: ManagerConfig, cfg: "TaskConfig") -> Check:
-    """Can the manager actually reach the Tasks database from here?
+def _task_database(run: Runner, cfg: "TaskConfig") -> Check:
+    """Can a `claude` started in this repo reach the Tasks database?
 
-    Two things at once, and they fail the same way from the outside: the Notion MCP being
-    reachable and authenticated, and `data_source` in `config/tasks.yaml` naming a database
-    that exists. Proving them together is enough, because the fix for either is a sentence.
-
-    It goes through the same `manager_argv` a real ask uses, so this proves the path the
-    work will take rather than a similar-looking one.
+    Three things at once, and they fail the same way from the outside: `.mcp.json` being
+    picked up, the Notion MCP being authorised, and `data_source` in `config/tasks.yaml`
+    naming a database that exists. Proving them together is enough, because the fix for
+    each is a sentence — and it is exactly the command the manager itself will run, not a
+    lookalike, because there is no wrapper left to diverge from.
     """
-    from slurm_agent.manager import manager_argv
-
-    argv = manager_argv(manager, (
-        f"Fetch the Notion data source {cfg.data_source} and reply with its title and "
-        "nothing else. Do not create or modify anything, and do not use any other tool."))
+    argv = ["claude", "-p",
+            f"Fetch the Notion data source {cfg.data_source} and reply with its title and "
+            "nothing else. Do not create or modify anything, and use no other tool.",
+            "--output-format", "json", "--permission-mode", "dontAsk",
+            "--max-budget-usd", "1"]
     try:
         raw = run(" ".join(quote(a) for a in argv))
         result = json.loads(raw[raw.index("{"):])
@@ -1171,16 +1170,15 @@ if test():
 
     cfg_t = _TC(data_source="collection://abc")
     good = FakeRunner({"claude": '{"result": "Tasks", "is_error": false}'})
-    row = _task_database(good, manager, cfg_t)
+    row = _task_database(good, cfg_t)
     assert row.ok and "Tasks" in row.detail
-    # Bounded: the session that reads Notion may reach Notion and nothing else.
-    assert "--strict-mcp-config" in good.commands[0]
     assert "Do not create or modify anything" in good.commands[0]
-    # The preamble rides along, so this proves the path a real ask takes.
-    assert "slurm-orchestration/SKILL.md" in good.commands[0]
+    # A plain `claude -p` from the repo root — the same thing the human types, so there is
+    # no wrapper here that could work while the real path does not.
+    assert good.commands[0].startswith("claude -p ")
 
     bad = FakeRunner({"claude": '{"result": "not authorised", "is_error": true}'})
-    assert _task_database(bad, manager, cfg_t).ok is False
+    assert _task_database(bad, cfg_t).ok is False
     display(render([row]))
 
 

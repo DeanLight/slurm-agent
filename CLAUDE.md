@@ -1,5 +1,22 @@
 # slurm-agent
 
+## If you are reading this, you are the manager
+
+You were started in this repo, which means someone wants Tillicum work done. **Read
+`.claude/skills/slurm-orchestration/SKILL.md` before doing anything else** — it is the
+procedure for tasks, allocations, launches, supervision and teardown, and it is not
+optional. `poe --help` is the full inventory of what you can drive.
+
+The human names the work. You do the rest: open the Notion task, size the compute, write
+the agent config, launch, supervise, report progress and spend, tear down. If you find
+yourself telling them which `poe` command to run, you have handed back the job.
+
+When you are asked for ids and nothing else, give exactly that — one per line, no sentence
+around them. The caller is a shell capturing your reply into a variable, and prose becomes
+part of the id.
+
+---
+
 A local Claude Code session brings up Tillicum allocations, stages repos, and launches and
 supervises Claude agents on the compute node. Tillicum sits behind UW 2FA on a network only
 the researcher's laptop is on, so **this repo only works from that laptop** — no sandbox,
@@ -81,16 +98,16 @@ an agent. That rule is what makes a closed laptop lossless and two sessions agre
   the proof a clone works. It deliberately does not bring up an allocation or launch an
   agent — driving the machinery from a notebook is a slower, more brittle copy of what the
   manager does, and it made setup look as though it required a trial run to succeed.
-- **`poe ask` is the only way in past setup, and it is the same manager either way.** It
-  runs a headless session in the repo root with the preamble that makes it read
-  `.claude/skills/slurm-orchestration/SKILL.md` — availability is not use, and a manager
-  that skipped its own skill invents a worse procedure invisibly. Never `--bare`: it skips
-  CLAUDE.md discovery, restricts auth to `ANTHROPIC_API_KEY`, and skips hooks.
-- **A reply is stdout and nothing else.** `IDS=$(poe ask "…")` is the contract that lets one
-  ask feed the next, so cost, session id and logs all go to stderr. Logs go to stderr
-  repo-wide for this reason: a log line captured into that variable does not fail, it asks
-  the next session to run a task named after a timestamp. An errored session's `result` is a
-  message, not an answer, and must never reach stdout.
+- **The repo configures the manager, not a wrapper.** `claude` started in this root comes
+  up as the manager because of four files Claude Code reads by itself: this one, the skill,
+  `.mcp.json` (Notion and GitHub) and `.claude/settings.json` (those servers pre-enabled,
+  `poe` pre-approved, `.envrc` denied). Anything a manager session needs goes in those, so
+  that what a human types and what a script runs are the same command. A wrapper that
+  configured the session would work while a bare `claude` quietly did not.
+- **A reply is stdout and nothing else.** `IDS=$(claude -p "…")` is the contract that lets
+  one session feed the next — `--output-format` defaults to `text` under `-p` — so logs go
+  to stderr repo-wide. A log line captured into that variable does not fail; it asks the
+  next session to run a task named after a timestamp.
 - **Work is grounded in Notion.** The manager opens the rows itself through its own MCP, in
   the database `config/tasks.yaml` names; the id becomes `{{ task }}` in the agent's brief,
   the agent opens that row before starting and writes its findings back to it.

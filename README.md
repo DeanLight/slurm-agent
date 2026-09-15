@@ -30,9 +30,16 @@ After that you never touch a `poe` command again — you talk to the manager. In
 or from a script or notebook, where its reply feeds the next thing you say:
 
 ```bash
-IDS=$(poe ask "Open two Notion tasks: <A>, and <B>. Reply with the ids, one per line.")
-poe ask "Run $IDS on Tillicum. Tell me what each produced and what it cost."
+cd ~/src/slurm-agent
+IDS=$(claude -p 'Open two Notion tasks: <A>, and <B>. Reply with the ids, one per line.')
+echo "$IDS"
+claude -p "Run $IDS on Tillicum. Tell me what each produced and what it cost."
 ```
+
+There is no wrapper: `claude` started in this root **is** the manager, because `CLAUDE.md`,
+`.claude/skills/slurm-orchestration/SKILL.md`, `.mcp.json` and `.claude/settings.json` say
+so and Claude Code reads all four by itself. `--output-format` defaults to `text` under
+`-p`, so stdout is the reply and `$( )` is all you need.
 
 `.claude/skills/slurm-orchestration/SKILL.md` auto-loads and makes that sentence enough. It
 opens a Notion task for each piece of work (`poe task-new`, whose id it passes straight
@@ -72,7 +79,6 @@ loop you can stop and restart at will.
 | `poe notify-test` | Really send, from here and from the cluster |
 | `poe monitor-*` | The change-gated usage digest and its schedule |
 | `poe session-new NAME --into DIR` | Scaffold a session notebook in the repo it is about |
-| `poe ask "..."` | Ask the manager to do something; its reply is stdout, for `$( )` |
 | `poe agent-run TRIAL-A --job J --agent smoke` | A two-minute trial task — see the quick start |
 
 `poe --help` is the full inventory.

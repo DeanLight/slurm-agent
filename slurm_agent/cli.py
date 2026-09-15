@@ -374,34 +374,6 @@ def monitor_uninstall() -> None:
     print("removed: the slurm-agent monitor crontab block")
 
 
-@app.command
-def ask(prompt: str, resume: str | None = None) -> None:
-    """Ask the manager to do something. Its reply goes to stdout; the cost to stderr.
-
-    This is the same manager you get by opening Claude Code here — same CLAUDE.md, same
-    skill, same tools — reachable from a script or a notebook:
-
-        IDS=$(poe ask "Open two Notion tasks: … and … . Reply with the ids, one per line.")
-        poe ask "Run $IDS on Tillicum. Keep me posted on progress and spend."
-
-    So stdout is the reply and nothing else, and everything else goes to stderr where a
-    `$( )` capture cannot swallow it.
-    """
-    import sys
-
-    from slurm_agent import manager as mgr
-    from slurm_agent.remote import local_runner
-
-    try:
-        # No timeout: the manager may be bringing up an allocation and watching agents on
-        # it. A wall clock here would kill real work in the middle.
-        reply = mgr.ask(_manager(), prompt, local_runner(timeout=None), resume=resume)
-    except mgr.ManagerError as exc:
-        raise SystemExit(str(exc))
-    print(f"[manager ${reply.cost_usd:.3f} · session {reply.session_id}]", file=sys.stderr)
-    print(reply.text)
-
-
 @app.command(name="session-new")
 def session_new(name: str, into: str | None = None) -> None:
     """Scaffold a session notebook, in the repo the session is about.
