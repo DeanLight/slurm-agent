@@ -39,55 +39,67 @@ def test_every_poe_task_is_a_cli_command_or_template_plumbing():
     assert not extra, f"poe tasks with no CLI command: {sorted(extra)}"
 
 
-def test_task_new_prints_only_the_id_on_stdout(tmp_path):
-    """`TASK=$(poe task-new "...")` must capture the id and nothing else.
+def _stub_claude(tmp_path, payload):
+    """A fake `claude` on PATH that answers with one JSON object."""
+    import json
 
-    This is the whole contract: an id has to cross a shell boundary to reach the agent's
-    prompt, so anything friendly printed on stdout — "opened TASK-118", a cost, a blank
-    line — silently becomes part of the task id and the agent is launched against garbage.
+    stub = tmp_path / "claude"
+    stub.write_text("#!/bin/sh\nexec cat <<'EOF'\n" + json.dumps(payload) + "\nEOF\n")
+    stub.chmod(0o755)
+    return stub
+
+
+def _run_cli(tmp_path, *args):
+    import os
+    import subprocess
+
+    return subprocess.run(["slurm-agent", *args], cwd=ROOT, capture_output=True, text=True,
+                          env={**os.environ, "PATH": f"{tmp_path}:{os.environ['PATH']}"})
+
+
+def test_ask_puts_only_the_reply_on_stdout(tmp_path):
+    """`IDS=$(poe ask "…")` must capture the manager's answer and nothing else.
+
+    This is the whole contract: the answer crosses a shell boundary to become the input of
+    the next ask. Anything friendly on stdout — a cost, a session id, a log line — silently
+    becomes part of it, and the next session is asked to run a task named after a timestamp.
     So this runs the real command with a stub `claude` on PATH and reads the two streams
-    apart, rather than trusting that the print statements are where they look.
+    apart, rather than trusting that the prints are where they look.
     """
-    import json
-    import os
-    import subprocess
+    _stub_claude(tmp_path, {"result": "TASK-118\nTASK-119", "total_cost_usd": 0.21,
+                            "session_id": "abc123", "is_error": False})
+    done = _run_cli(tmp_path, "ask", "Open two tasks")
 
-    stub = tmp_path / "claude"
-    stub.write_text("#!/bin/sh\nexec cat <<'EOF'\n" + json.dumps(
-        {"result": "Created TASK-118 for you.", "total_cost_usd": 0.042,
-         "is_error": False}) + "\nEOF\n")
-    stub.chmod(0o755)
-
-    done = subprocess.run(
-        ["slurm-agent", "task-new", "Add a retry to the loader"],
-        cwd=ROOT, capture_output=True, text=True,
-        env={**os.environ, "PATH": f"{tmp_path}:{os.environ['PATH']}"},
-    )
     assert done.returncode == 0, done.stderr
-    # Exactly the id. Not a line containing it.
-    assert done.stdout.strip() == "TASK-118"
-    assert done.stdout.count("\n") == 1
-    # The human-readable part went to stderr, where `$( )` cannot swallow it.
-    assert "opened TASK-118" in done.stderr and "0.042" in done.stderr
+    assert done.stdout == "TASK-118\nTASK-119\n"
+    # Everything else went to stderr, including the log line structlog would have put on
+    # stdout by default.
+    assert "abc123" in done.stderr and "0.210" in done.stderr
+    assert "manager.replied" in done.stderr
 
 
-def test_task_new_fails_loudly_rather_than_printing_something_unusable(tmp_path):
-    """Two ids, or none, must not reach a launch. A wrong task is worse than no task."""
-    import json
-    import os
-    import subprocess
+def test_ask_carries_the_repo_context_into_the_session(tmp_path):
+    """A manager that has not read its own skill invents a worse procedure, invisibly."""
+    _stub_claude(tmp_path, {"result": "ok", "total_cost_usd": 0.0, "is_error": False})
+    done = _run_cli(tmp_path, "ask", "MARKER-PROMPT")
 
-    stub = tmp_path / "claude"
-    stub.write_text("#!/bin/sh\nexec cat <<'EOF'\n" + json.dumps(
-        {"result": "Created TASK-118 and TASK-119.", "total_cost_usd": 0.01,
-         "is_error": False}) + "\nEOF\n")
-    stub.chmod(0o755)
+    assert done.returncode == 0, done.stderr
+    # The stub echoes nothing back, so assert on what the real argv would carry instead.
+    from slurm_agent.config import ManagerConfig
+    from slurm_agent.manager import manager_argv
 
-    done = subprocess.run(
-        ["slurm-agent", "task-new", "two rows by mistake"],
-        cwd=ROOT, capture_output=True, text=True,
-        env={**os.environ, "PATH": f"{tmp_path}:{os.environ['PATH']}"},
-    )
+    argv = manager_argv(ManagerConfig(), "MARKER-PROMPT")
+    assert "slurm-orchestration/SKILL.md" in argv[2] and "CLAUDE.md" in argv[2]
+    assert argv[2].endswith("MARKER-PROMPT")
+    assert "--bare" not in argv
+
+
+def test_ask_fails_loudly_rather_than_printing_an_error_as_an_answer(tmp_path):
+    """An errored session's `result` is a message, not an answer. It must not reach stdout."""
+    _stub_claude(tmp_path, {"result": "budget exceeded", "is_error": True,
+                            "total_cost_usd": 5.0})
+    done = _run_cli(tmp_path, "ask", "Open two tasks")
+
     assert done.returncode != 0
-    assert done.stdout.strip() == "", "nothing may reach stdout when the id is ambiguous"
-    assert "exactly one task id" in done.stderr
+    assert done.stdout.strip() == "", "an error must never look like the manager's reply"
+    assert "the manager session failed" in done.stderr

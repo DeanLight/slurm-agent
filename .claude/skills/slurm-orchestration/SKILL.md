@@ -98,46 +98,35 @@ the human can watch it:
 ssh -t tillicum-login tmux attach -t dev
 ```
 
-## 3. Open a Notion task for each piece of work
+## 3. Make sure every piece of work has a Notion task
 
 Work here is **grounded in Notion**. A run is worth something because it is about a task,
-and the task is what carries the record after the allocation is gone. So every launch gets
-a real task id, and you open it — the human named the work in a sentence, not in Notion.
+and the task is what carries the record after the allocation is gone. So every launch needs
+a real task id.
 
-```bash
-TASK_A=$(poe task-new "Add a retry to the loader")
-TASK_B=$(poe task-new "Document the batch path")
-echo "$TASK_A $TASK_B"
-```
+The human may hand you ids (`Run TASK-118 and TASK-119`) or may describe the work in a
+sentence. If they described it, **open the rows yourself** with your Notion MCP, in the
+database `config/tasks.yaml` names — read that file rather than assuming.
 
-`poe task-new` runs a **headless Claude session** on this laptop with only the Notion MCP
-reachable (`--strict-mcp-config`), has it create one row, and prints **the id and nothing
-else** on stdout. That is why `$( )` is enough: the friendly line and the cost go to stderr,
-where the capture cannot swallow them.
+Either way:
 
-Hold the ids in shell variables and pass them straight into the launch — that is how the id
-reaches the agent:
+- **Read each task before launching anything.** An id the human mistyped, or a row that
+  says something different from what they just told you, is worth thirty seconds now and an
+  allocation later. Say what each task actually asks for, in your own words, and let them
+  correct you.
+- **Tell them the ids as soon as you have them**, before spending anything. That is their
+  handle on the work, and the moment to stop you if a row is not what they meant.
+- **Never launch without one.** Not for a quick one, not for a retry. A run with no task is
+  a run nobody can find afterwards, which is the failure this repo exists to prevent.
 
-```bash
-poe agent-run "$TASK_A" --job dev --agent task-a --exp-id task-a
-```
+When you were asked for ids and nothing else — someone capturing your reply into a shell
+variable — give exactly that: the ids, one per line, no sentence around them. The caller is
+a script, and a friendly line becomes part of the id.
 
-`{{ task }}` in the agent's brief is that id. The brief tells the agent to open the row in
-Notion before doing anything, and to update it with what it found when it finishes. So the
-chain is: you open the task → the id crosses the shell → the agent reads the task → the
-agent writes the result back to the same row.
-
-Three ways this goes wrong, and what to do:
-
-- **`task-new` exits non-zero.** It refuses rather than guessing when the session came back
-  with no id or more than one. Read what it says on stderr; do not invent an id.
-- **The variable is empty.** Never launch with an empty task. `[ -n "$TASK_A" ] || exit 1`
-  before you spend anything.
-- **You are tempted to skip it** for something small. Do not. A run with no task is a run
-  nobody can find afterwards, which is the failure this repo exists to prevent.
-
-Tell the human the ids as soon as you have them, before anything is launched — that is
-their handle on the work, and the moment to stop you if a task is not what they meant.
+The id then travels: `poe agent-run "$TASK_A" …` puts it in the agent's brief as
+`{{ task }}`, the brief has the agent open that row before it starts, and the agent writes
+its findings back to the same row when it finishes. You open the task → the id crosses into
+the launch → the agent reads the task → the agent updates it.
 
 ## 4. Give each task an agent config
 
@@ -273,3 +262,5 @@ reading them.
   that costs money while nobody is looking.
 - **Never launch without a task id.** Not for a quick one, not for a retry. Work that is
   not attached to a row is work nobody can find afterwards, and the record is the point.
+- **Never answer a request for ids with a sentence.** Asked for ids and nothing else, the
+  caller is a script capturing your reply; prose becomes part of the id.

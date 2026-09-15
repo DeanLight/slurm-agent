@@ -16,8 +16,11 @@ stops there.
 
 The work itself you never drive by hand. Open Claude Code in this repo and say *"run these
 tasks on Tillicum, keep me posted on progress and spend"* —
-`.claude/skills/slurm-orchestration/SKILL.md` auto-loads and takes the whole job: sizing the
-compute, launching, supervising, reporting, and tearing down.
+`.claude/skills/slurm-orchestration/SKILL.md` auto-loads and takes the whole job: opening
+the Notion tasks, sizing the compute, launching, supervising, reporting, and tearing down.
+
+`poe ask "…"` is the same manager from a script or a notebook. Its reply is stdout and
+nothing else, so one ask can feed the next.
 
 ```bash
 poe nb             # pair the notebooks, including the quick start

@@ -125,12 +125,28 @@ if test():
 
 # %%
 class ManagerConfig(BaseModel):
-    """`config/manager.yaml` — the local session's own settings."""
+    """`config/manager.yaml` — the local session's own settings.
+
+    The manager is an agent too, and this is its audit surface, exactly as
+    `agents/<kind>.yaml` is a remote agent's: reading it tells you what a headless manager
+    session may reach and spend.
+    """
 
     model_config = ConfigDict(extra="forbid")
 
     requires_env: list[str] = []
     envrc: Path = Path(".envrc")
+
+    # What a headless manager session may do. It drives this repo through `poe`, writes
+    # agent configs, and reaches Notion — so it is broad on purpose, and narrow in the one
+    # way that matters: it is a list, here, that you can read.
+    allowed_tools: list[str] = ["Read", "Write", "Edit", "Glob", "Grep", "Bash", "Skill"]
+    mcp: list[str] = ["notion"]
+    mcp_config: Path = Path("config/mcp.json")
+    # A runaway guard on one session's list-priced tokens, not a budget for the work: the
+    # agents it launches carry their own caps.
+    max_budget_usd: float = 5.0
+    model: str | None = None
 
 
 # %%

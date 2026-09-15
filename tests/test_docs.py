@@ -117,18 +117,23 @@ def test_the_manager_skill_takes_the_whole_job():
     assert "Never leave an allocation up" in skill
 
 
-def test_the_quick_start_stops_at_setup():
-    """It proves the machines and hands over. It does not drive a run.
+def test_the_quick_start_only_talks_to_claude_after_setup():
+    """Past `hc`, every cell asks the manager. None of them does the work itself.
 
     Driving allocations and launches from a notebook is a slower, more brittle copy of what
-    the manager does, and it made setup look like it required a trial run to succeed.
+    the manager does, and it made setup look as though it required a trial run to succeed.
     """
     src = (ROOT / "docs" / "quickstart.py").read_text()
     for command in ("poe job-up", "poe agent-run", "poe agent-batch", "poe agent-watch",
-                    "poe job-down", "poe flush"):
-        assert f'sh("uv run {command}' not in src, f"the quick start still runs {command}"
+                    "poe job-down", "poe flush", "poe status", "poe agent-logs"):
+        assert f"sh('uv run {command}" not in src and f'sh("uv run {command}' not in src, \
+            f"the quick start still runs {command} itself"
     assert "poe hc --full --send" in src, "it must still prove the machines"
-    assert "Hand the work to the manager" in src
+    assert "you only talk to Claude" in src
+    # The two asks: open the tasks, then run them. The second must carry the ids from the
+    # first, which is the whole shape the human asked for.
+    assert "uv run poe ask" in src
+    assert "extract_ids(" in src and "{TASK_A} and {TASK_B}" in src
 
 
 def test_the_manager_skill_grounds_work_in_notion():
@@ -140,10 +145,13 @@ def test_the_manager_skill_grounds_work_in_notion():
     same row.
     """
     skill = (ROOT / ".claude" / "skills" / "slurm-orchestration" / "SKILL.md").read_text()
-    assert "$(poe task-new" in skill, "it must show the capture, not describe it"
+    assert "config/tasks.yaml" in skill, "it must say where the Tasks database is named"
+    assert "open the rows yourself" in skill, "the human describes work; the manager files it"
     assert 'poe agent-run "$TASK_A"' in skill, "the id must be shown reaching the launch"
     assert "Never launch without a task id" in skill
     assert "{{ task }}" in skill, "it must say which brief variable the id becomes"
+    # Asked for ids and nothing else, the caller is a script.
+    assert "the ids, one per line, no sentence around them" in skill
 
 
 def test_the_agent_brief_reads_and_updates_its_task():

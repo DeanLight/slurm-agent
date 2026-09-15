@@ -81,15 +81,21 @@ an agent. That rule is what makes a closed laptop lossless and two sessions agre
   the proof a clone works. It deliberately does not bring up an allocation or launch an
   agent — driving the machinery from a notebook is a slower, more brittle copy of what the
   manager does, and it made setup look as though it required a trial run to succeed.
-- **Work is grounded in Notion, and the id crosses a shell boundary.** The manager opens a
-  task with `poe task-new`, which runs a headless Claude session reaching only the Notion
-  MCP and prints **the id and nothing else** on stdout — everything readable goes to stderr,
-  because `TASK=$(poe task-new "…")` is the contract. That variable becomes `{{ task }}` in
-  the agent's brief, the agent opens the row, and it writes its findings back there. Logs go
-  to stderr repo-wide for the same reason: a log line captured into that variable does not
-  fail, it launches an agent against a task named after a timestamp. `extract_id` refuses
-  zero or several matches rather than guessing — a run filed under the wrong row is worse
-  than no run.
+- **`poe ask` is the only way in past setup, and it is the same manager either way.** It
+  runs a headless session in the repo root with the preamble that makes it read
+  `.claude/skills/slurm-orchestration/SKILL.md` — availability is not use, and a manager
+  that skipped its own skill invents a worse procedure invisibly. Never `--bare`: it skips
+  CLAUDE.md discovery, restricts auth to `ANTHROPIC_API_KEY`, and skips hooks.
+- **A reply is stdout and nothing else.** `IDS=$(poe ask "…")` is the contract that lets one
+  ask feed the next, so cost, session id and logs all go to stderr. Logs go to stderr
+  repo-wide for this reason: a log line captured into that variable does not fail, it asks
+  the next session to run a task named after a timestamp. An errored session's `result` is a
+  message, not an answer, and must never reach stdout.
+- **Work is grounded in Notion.** The manager opens the rows itself through its own MCP, in
+  the database `config/tasks.yaml` names; the id becomes `{{ task }}` in the agent's brief,
+  the agent opens that row before starting and writes its findings back to it.
+  `extract_ids` takes exactly the number asked for and refuses otherwise — a run filed under
+  the wrong row is worse than no run.
 - **The human names the work; the manager does the rest.** Every `poe` command exists so
   that an agent can drive this repo through the same surface a human would — not so a human
   has to. A skill or doc that tells the human to run `poe job-up` has handed back the job it

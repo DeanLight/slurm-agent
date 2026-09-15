@@ -20,12 +20,18 @@ Then run **[docs/quickstart.ipynb](docs/quickstart.py)** once on the new machine
 `hc --full --send`, and it stops. Commit it with its outputs — they are the proof this
 clone works.
 
-After that you never touch a `poe` command again. Open Claude Code here and say what you
-want run:
+After that you never touch a `poe` command again — you talk to the manager. Interactively:
 
 ```
 > Run two small tasks on Tillicum for me: <task A>, and <task B>.
 > Keep me posted on progress and spend.
+```
+
+or from a script or notebook, where its reply feeds the next thing you say:
+
+```bash
+IDS=$(poe ask "Open two Notion tasks: <A>, and <B>. Reply with the ids, one per line.")
+poe ask "Run $IDS on Tillicum. Tell me what each produced and what it cost."
 ```
 
 `.claude/skills/slurm-orchestration/SKILL.md` auto-loads and makes that sentence enough. It
@@ -66,7 +72,7 @@ loop you can stop and restart at will.
 | `poe notify-test` | Really send, from here and from the cluster |
 | `poe monitor-*` | The change-gated usage digest and its schedule |
 | `poe session-new NAME --into DIR` | Scaffold a session notebook in the repo it is about |
-| `poe task-new "TITLE"` | Open a Notion task headlessly; prints **only** its id, for `$( )` |
+| `poe ask "..."` | Ask the manager to do something; its reply is stdout, for `$( )` |
 | `poe agent-run TRIAL-A --job J --agent smoke` | A two-minute trial task — see the quick start |
 
 `poe --help` is the full inventory.

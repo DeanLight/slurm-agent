@@ -374,30 +374,32 @@ def monitor_uninstall() -> None:
     print("removed: the slurm-agent monitor crontab block")
 
 
-@app.command(name="task-new")
-def task_new(title: str, body: str | None = None) -> None:
-    """Open one Notion task headlessly and print its id — and ONLY its id.
+@app.command
+def ask(prompt: str, resume: str | None = None) -> None:
+    """Ask the manager to do something. Its reply goes to stdout; the cost to stderr.
 
-    Built to be read by a shell, because that is how a task id reaches an agent:
+    This is the same manager you get by opening Claude Code here — same CLAUDE.md, same
+    skill, same tools — reachable from a script or a notebook:
 
-        TASK_A=$(poe task-new "Add a retry to the loader")
-        poe agent-run "$TASK_A" --job dev --agent task-a
+        IDS=$(poe ask "Open two Notion tasks: … and … . Reply with the ids, one per line.")
+        poe ask "Run $IDS on Tillicum. Keep me posted on progress and spend."
 
-    So stdout is one token. Everything a human wants to read goes to stderr, where `$( )`
-    will not swallow it and a pipeline will not be corrupted by it.
+    So stdout is the reply and nothing else, and everything else goes to stderr where a
+    `$( )` capture cannot swallow it.
     """
     import sys
 
-    from slurm_agent import tasks
+    from slurm_agent import manager as mgr
     from slurm_agent.remote import local_runner
 
-    cfg = load("config/tasks.yaml", tasks.TaskConfig)
     try:
-        task_id, cost = tasks.create_task(cfg, title, local_runner(timeout=300), body=body)
-    except tasks.TaskError as exc:
-        raise SystemExit(f"could not open a task: {exc}")
-    print(f"opened {task_id}: {title} (${cost:.3f})", file=sys.stderr)
-    print(task_id)
+        # No timeout: the manager may be bringing up an allocation and watching agents on
+        # it. A wall clock here would kill real work in the middle.
+        reply = mgr.ask(_manager(), prompt, local_runner(timeout=None), resume=resume)
+    except mgr.ManagerError as exc:
+        raise SystemExit(str(exc))
+    print(f"[manager ${reply.cost_usd:.3f} · session {reply.session_id}]", file=sys.stderr)
+    print(reply.text)
 
 
 @app.command(name="session-new")

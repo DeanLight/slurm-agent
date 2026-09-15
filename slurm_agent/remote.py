@@ -71,7 +71,7 @@ def ssh_runner(host: str, *, timeout: int = 60) -> Runner:
     return run
 
 
-def local_runner(*, timeout: int = 60) -> Runner:
+def local_runner(*, timeout: int | None = 60) -> Runner:
     """The same `Runner` shape, executing HERE instead of over ssh.
 
     Some things are true of the laptop and of the login node and must be checked on both —
@@ -96,6 +96,9 @@ def local_runner(*, timeout: int = 60) -> Runner:
 # %%
 if test():
     assert local_runner()("echo hello").strip() == "hello"
+    # `timeout=None` means no wall clock, for a manager session that may be supervising a
+    # run: killing it at 60s would end real work mid-flight.
+    assert local_runner(timeout=None)("echo patient").strip() == "patient"
     try:
         local_runner()("exit 3")
         raise AssertionError("a non-zero exit must raise, exactly as over ssh")

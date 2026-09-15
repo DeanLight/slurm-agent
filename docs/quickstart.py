@@ -311,52 +311,80 @@ hc = sh("uv run poe hc --full --send", timeout=1800)
 assert hc.returncode == 0, "fix the MISSING rows above before spending a GPU-hour"
 
 # %% [markdown]
-# ## 4. Hand the work to the manager
+# ## 4. From here on, you only talk to Claude
 #
-# That is the setup done, and it is where this notebook stops. **You do not drive
-# allocations and launches by hand.** That is the manager's job, and doing it yourself here
-# would only be a slower, more brittle copy of what it already does.
+# Setup is done. **Nothing below runs a `poe` command that does work** — every cell asks
+# the manager, and the manager decides what to run.
 #
-# Open Claude Code in this repo and tell it the work:
+# `poe ask` is the same manager you get by opening Claude Code in this repo: same
+# `CLAUDE.md`, same `.claude/skills/slurm-orchestration/SKILL.md`, same tools. Its reply is
+# stdout and nothing else, so you can capture it, look at it, and put it into the next
+# thing you say.
 #
-# ```
-# claude
-# > Run two small tasks on Tillicum for me: <task A>, and <task B>.
-# > Keep me posted on progress and spend.
-# ```
+# First: ask it to open the two tasks in Notion. Say what you want done in your own words —
+# it knows where the Tasks database is, because `config/tasks.yaml` says so.
+
+# %%
+def ask(prompt: str, *, timeout: int = 900) -> str:
+    """Say something to the manager; get its reply back as text.
+
+    `shlex.quote`, because a prompt is prose: apostrophes, quotes and newlines all belong
+    in it, and none of them may reach the shell as syntax.
+    """
+    import shlex
+
+    return sh(f"uv run poe ask {shlex.quote(prompt)}", timeout=timeout).stdout
+
+
+ids = ask("""Open two new tasks in our Notion Tasks database:
+  1. Add a retry with backoff to the dataset loader.
+  2. Document the batch launch path in the README.
+
+Create them, then reply with the two task ids, one per line, and nothing else.""")
+
+# %% [markdown]
+# Read the ids out of that reply. `extract_ids` takes exactly the number you asked for and
+# refuses otherwise — if the manager made one row, or three, or described what it would do
+# without doing it, that is a real disagreement about what happened, and guessing which ids
+# it meant would file real work under the wrong rows.
+
+# %%
+from slurm_agent.config import load  # noqa: E402
+from slurm_agent.tasks import TaskConfig, extract_ids  # noqa: E402
+
+tasks_cfg = load("config/tasks.yaml", TaskConfig)
+TASK_A, TASK_B = extract_ids(ids, tasks_cfg.id_pattern, 2)
+print(f"TASK_A = {TASK_A}\nTASK_B = {TASK_B}")
+
+# %% [markdown]
+# Now hand those ids back to the manager as the work to run. This is a **new session** — it
+# reads the tasks out of Notion itself, which is exactly what a remote agent will do, so an
+# id that is wrong fails here rather than after an allocation is up.
 #
-# `.claude/skills/slurm-orchestration/SKILL.md` auto-loads from this repo — you do not have
-# to name it — and it is what makes that sentence enough. It tells the manager to:
+# From this one sentence it will: check both machines with `poe hc --full`, decide the
+# compute (two small tasks belong as two steps on **one** allocation — Tillicum permits one
+# interactive allocation, so a second job is not a tidier answer, it is an unavailable one),
+# write an agent config for each task, launch them, and report back.
+
+# %%
+print(ask(f"""Run {TASK_A} and {TASK_B} on Tillicum for me.
+
+Read each task in Notion to see what it asks for. Size the compute yourself.
+When you are done, tell me what each agent produced and what it cost.""", timeout=3600))
+
+# %% [markdown]
+# Ask for an update whenever you want one, in the same way:
+
+# %%
+print(ask(f"How are {TASK_A} and {TASK_B} doing, and what have they cost so far?"))
+
+# %% [markdown]
+# When the work is done, the durable record is the Notion row — each agent writes its own
+# findings there — and the allocation is gone, because the manager drops it. Nothing is left
+# running and nothing is left to clean up by hand.
 #
-# 1. run `poe hc --full` first, so nothing is spent on work that cannot finish;
-# 2. **decide the compute itself** — Tillicum permits one interactive allocation, so tasks
-#    that claim no GPU (`gpus: 0`) run as steps on one shared allocation, and only work that
-#    needs a node for hours or runs unattended goes to `poe agent-batch`;
-# 3. **open a Notion task for each piece of work you named** with `poe task-new`, which
-#    prints the id and nothing else so it can be captured into a shell variable and passed
-#    straight into the launch — that id is what the agent reads, and what it writes its
-#    findings back to. It will tell you the ids before spending anything;
-# 4. **write an `agents/<kind>.yaml` for each task**, if one does not exist —
-#    which repo and branch it works in, where it stages, where its output goes, what it may
-#    run and spend — and tell you what it wrote before launching it. That file is the audit
-#    surface: it is how you see what an agent was allowed to do;
-# 5. bring up exactly one allocation, sized for whatever actually claims a device, and
-#    launch each task onto it;
-# 6. poll, and **report back in its own words** — which task, how far along, what it has
-#    cost, and whether anything needs you;
-# 7. drop the allocation when the last task is done, because it is the only thing that costs
-#    money while nobody is looking.
-#
-# The Notion row is the durable half of that. The manager's updates are for you now; the
-# task is what makes the run findable in six weeks, and the agent writes its findings there
-# itself.
-#
-# Ask it for an update whenever you want one; it re-derives everything from `squeue`,
-# `sacct` and the run roots on the cluster, so there is no stale local state to go wrong and
-# closing your laptop mid-run loses nothing.
-#
-# If you want the raw view yourself, the same commands are there — `poe status`,
-# `poe agent-status`, `poe agent-logs <session> --cells`, `poe job-down <name>`. But the
+# If you ever want the raw view, the commands are all there (`poe status`,
+# `poe agent-status`, `poe agent-logs <session> --cells`, `poe job-down <name>`). But the
 # point of this repo is that you should not need them.
 
 # %% [markdown]

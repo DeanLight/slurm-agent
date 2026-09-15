@@ -88,9 +88,10 @@ monitor-uninstall = {cmd = "slurm-agent monitor-uninstall", help = "Remove the d
 monitor-status    = {cmd = "slurm-agent monitor-status", help = "Is the schedule on, and when does it fire"}
 session-new       = {cmd = "slurm-agent session-new", help = "Scaffold a session artifact notebook"}
 
-# ── tasks ───────────────────────────────────────────────────────────────────────
-# Prints ONLY the id on stdout, so `TASK=$(poe task-new "...")` works.
-task-new          = {cmd = "slurm-agent task-new", help = "Open a Notion task and print its id"}
+# ── the manager ─────────────────────────────────────────────────────────────────
+# Everything past setup is a conversation with this. Its reply is stdout and nothing else,
+# so `IDS=$(poe ask "...")` works.
+ask               = {cmd = "slurm-agent ask", help = "Ask the manager to do something"}
 
 [tool.juplit]
 notebook_src_dirs = ["slurm_agent", "docs"]
