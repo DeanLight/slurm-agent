@@ -98,3 +98,32 @@ def test_docs_name_the_skill_by_its_real_path():
     for doc in ("README.md", "CLAUDE.md", "docs/quickstart.py"):
         text = (ROOT / doc).read_text()
         assert "skills/slurm-orchestration.md" not in text, doc
+
+
+def test_the_manager_skill_takes_the_whole_job():
+    """The human names the work. Everything else is the manager's.
+
+    The failure this guards against is subtle and was real: a skill that lists `poe`
+    commands reads like a manual, and an agent following it hands the commands back to the
+    human instead of running them. It has to say, in words, that doing so is the job
+    returned.
+    """
+    skill = (ROOT / ".claude" / "skills" / "slurm-orchestration" / "SKILL.md").read_text()
+    assert "you do all of it" in skill
+    assert "Report in your own words, unprompted" in skill
+    assert "Never hand the mechanics back" in skill
+    assert "Never leave an allocation up" in skill
+
+
+def test_the_quick_start_stops_at_setup():
+    """It proves the machines and hands over. It does not drive a run.
+
+    Driving allocations and launches from a notebook is a slower, more brittle copy of what
+    the manager does, and it made setup look like it required a trial run to succeed.
+    """
+    src = (ROOT / "docs" / "quickstart.py").read_text()
+    for command in ("poe job-up", "poe agent-run", "poe agent-batch", "poe agent-watch",
+                    "poe job-down", "poe flush"):
+        assert f'sh("uv run {command}' not in src, f"the quick start still runs {command}"
+    assert "poe hc --full --send" in src, "it must still prove the machines"
+    assert "Hand the work to the manager" in src

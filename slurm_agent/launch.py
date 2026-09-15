@@ -327,10 +327,38 @@ def launch(agent: AgentConfig, task: str, job_name: str, run: Runner,
     return session_id
 
 
+# `%i` rather than `--Format=StepID:|`. The `|` there was meant as a literal field suffix
+# and reached the REMOTE shell unquoted, where it is a pipe: every launch onto a live
+# allocation died on `syntax error: unexpected end of file`, which reads like a cluster
+# fault and is not one. Anything with shell meaning must be quoted before it crosses ssh —
+# the same rule as `$HOME` vs `~`, in the other direction.
+STEP_FORMAT = "%i"
+
+
 def _agents_on(job_id: str, run: Runner) -> list[str]:
     """Step ids already running on this allocation — how many agents are sharing it."""
-    out = run(f"squeue --job={quote(job_id)} --steps --noheader --Format=StepID:|")
-    return [line.strip().rstrip("|") for line in out.splitlines() if line.strip()]
+    out = run(f"squeue --job={quote(job_id)} --steps --noheader "
+              f"--format={quote(STEP_FORMAT)}")
+    return [line.strip() for line in out.splitlines() if line.strip()]
+
+
+# %%
+if test():
+    # The bug this cost: a literal `|` in a remote command is a PIPE on the far side, so
+    # every launch onto a live allocation died with `syntax error: unexpected end of file`.
+    from tests.conftest import FakeRunner as _Fake
+
+    steps = _Fake({"squeue --job": "295750.0\n295750.1\n"})
+    assert _agents_on("295750", steps) == ["295750.0", "295750.1"]
+    asked = steps.commands[0]
+    # The real test is what the REMOTE shell would make of it: splitting it must give back
+    # exactly the words we meant, with no operator among them. `%` has no shell meaning, so
+    # `shlex.quote` rightly leaves it bare; `|` does, and that is what bit.
+    import shlex
+
+    assert shlex.split(asked) == ["squeue", "--job=295750", "--steps", "--noheader",
+                                  "--format=%i"], asked
+    assert not any(ch in asked for ch in "|;&<>"), f"a shell operator crosses ssh: {asked}"
 
 
 def continue_run(session_id: str, job_name: str, run: Runner, cluster: ClusterConfig,

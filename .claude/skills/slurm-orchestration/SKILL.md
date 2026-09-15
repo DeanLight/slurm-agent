@@ -9,9 +9,26 @@ You are the **manager**, running on the researcher's laptop. It is the only mach
 can reach Tillicum — UW 2FA on a network no sandbox is on — so everything you do runs here
 and reaches the cluster over ssh. The agents you launch run *there*.
 
-Asked to "run these tasks on Tillicum", do the five steps below in order. Do not skip
-step 1, and do not ask the human to open a pull request to see the result: they read the
-agents' notebooks through `poe agent-logs`, and nothing needs to be pushed anywhere.
+Asked to "run these tasks on Tillicum", **you do all of it**: the human names the work and
+nothing else. They do not bring up allocations, pick a job layout, launch agents, poll them
+or tear anything down — if you find yourself telling them to run a `poe` command, you have
+handed back the job you were given. Do the five steps below in order. Do not skip step 1.
+
+Two standing obligations while any of it is live:
+
+- **Report in your own words, unprompted.** After each launch, and whenever something
+  changes — a task finishes, gets stuck, or costs more than you expected — say what
+  happened, how far along things are, and what it has cost. Do not paste raw `poe` output
+  at them and call that a report.
+- **Never send them to a pull request.** Agents' notebooks are read in place with
+  `poe agent-logs --cells` and summarised by you. Nothing needs to be pushed anywhere for
+  the work to be seen.
+
+## 0. Is the machine set up at all?
+
+If `poe hc` has never passed here, the human has setup to do first and you cannot do it for
+them — it needs secrets and an interactive 2FA login. Point them at
+`docs/quickstart.ipynb`, which is exactly that and stops where you start.
 
 ## 1. Prove both machines can work — `poe hc --full`
 
@@ -81,7 +98,41 @@ the human can watch it:
 ssh -t tillicum-login tmux attach -t dev
 ```
 
-## 3. Launch, one command per task
+## 3. Give each task an agent config
+
+An agent config is what a task *is*, here. `agents/<kind>.yaml` names the repo it works in,
+the ref it stages, the workdir it stages into, where its output goes, what it may run, and
+what it may spend. If the work the human named is not already one of these, **write the
+file** — that is setup they delegated to you, not something to hand back.
+
+What ships, and when to reach for each:
+
+| File | For |
+|---|---|
+| `smoke.yaml`, `smoke-2.yaml` | Proving the path works. Two-minute tasks, `gpus: 0`, no git, output under the run root. |
+| `experiment-runner.yaml` | The shape of a real one — a repo, a ref, a log dir the agent commits into, a brief that routes through Notion. **Its `repo`/`ref`/`workdir` are placeholders.** |
+
+Copy `experiment-runner.yaml` and fill in, at minimum:
+
+- `repo` and `ref` — the repo and branch the task belongs to. The branch must already
+  exist; a launch clones it by name.
+- `workdir` — `~/work/<something unique>`. **Two tasks running at once need two configs
+  with different workdirs.** `stage()` runs `git fetch` and `checkout --detach` there, and
+  two launches racing in one checkout is the failure that looks like a cluster problem for
+  an hour.
+- `log_dir` — where its deliverable goes. A path relative to the workdir means "commit it
+  into the repo"; `"{RUN_DIR}/…"` means "leave it beside the launch record", which is right
+  for anything that is evidence rather than a contribution.
+- `gpus` — `0` unless the task holds a device. This is the number that decides step 2.
+- `max_budget_usd` — a runaway guard, not a budget. Set it to a few times what you expect.
+- `requires_env` — keys the task needs **on the cluster**, in the `.envrc` beside its
+  workdir. Leave it empty unless you know it needs one; a key that is declared and missing
+  refuses the launch.
+
+Say what you wrote, and what it will cost, before you launch it. A config is the audit
+surface: it is how the human sees what an agent was allowed to do.
+
+## 4. Launch, one command per task
 
 ```bash
 poe agent-run  TASK-A --job dev --agent smoke   --exp-id task-a
@@ -107,7 +158,7 @@ two-minute trial task. Every brief takes the same variables, under `StrictUndefi
 brief that reaches for one the launcher does not pass fails in the test suite rather than
 after the allocation is up.
 
-## 4. Supervise, and report what they produced
+## 5. Supervise, and report what they produced
 
 ```bash
 poe agent-status              # one line per live agent, with what each is waiting on
@@ -126,6 +177,16 @@ summarised on the login node, so a 4 MB notebook costs a few hundred tokens and 
 crosses to the laptop — and **tell the human what it found**, in your own words, with the
 cost. That report is the deliverable. Do not tell them to go and look at a PR.
 
+A useful update is short and says four things: which task, how far (`round n/m`), what it
+has cost so far, and whether anything needs them. Something like:
+
+> TRIAL-A is on round 2 of 3, ~4 min in, $0.31 of its $1 cap. TRIAL-B finished: it wrote
+> `smoke.ipynb` confirming an H200 with 143 GB. Allocation `dev` has 51 min left and has
+> cost about $0.60 of GPU time. Nothing needs you.
+
+Say it when something changes, not on a timer. An agent waiting at `needs_human` is the one
+case to raise immediately, because the meter is stopped and only they can unblock it.
+
 `agent-watch` kills on named thresholds and **proposes** renewals rather than taking them.
 Renewing means reading the notebook first, which is judgement, not a rule. Nothing is lost
 if the loop stops: it holds no state and rebuilds everything from the next poll.
@@ -134,7 +195,7 @@ The two spend figures are kept apart on purpose. **GPU-hours** are real money on
 account; **agent tokens** are priced at API list rates by the CLI even under a
 subscription. Never add them together, and never reconcile either against an invoice.
 
-## 5. Tear down
+## 6. Tear down
 
 The allocation is the only thing that costs money while nobody is looking. Drop it as soon
 as the last agent is done.
@@ -161,3 +222,8 @@ reading them.
 - **Never bring up a second allocation to get around a full one.** Use batch, or wait.
 - **Never spend before step 1 passes.** Every failure it catches is cheaper there than at
   launch, and far cheaper than at the end of a lease.
+- **Never hand the mechanics back.** "Run `poe job-up` and then tell me the job id" is not
+  a report; it is the task, returned. The human's part is deciding what work to do and
+  whether the spend is worth it.
+- **Never leave an allocation up after the last task is done.** It is the only thing here
+  that costs money while nobody is looking.

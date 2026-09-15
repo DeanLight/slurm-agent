@@ -16,15 +16,22 @@ uv sync --all-groups && poe hooks && poe init
 ```
 
 Then run **[docs/quickstart.ipynb](docs/quickstart.py)** once on the new machine
-(`poe nb` pairs it first). It walks `init` → `hc --full` → **one** allocation carrying two
-real development tasks as two steps. `poe hc` proves the wiring; the quick start proves the
-wiring carries an agent, for about a dollar. Nothing is pushed and there is no pull request:
-each task writes a notebook under its own run root, which you read with `poe agent-logs`.
-Commit the quick start with its outputs — they are the proof this clone works.
+(`poe nb` pairs it first). It does setup and nothing else: `init`, fill `.envrc`,
+`hc --full --send`, and it stops. Commit it with its outputs — they are the proof this
+clone works.
 
-After that, you do not run it by hand. Open Claude Code here and say *"run these tasks on
-Tillicum"*: `.claude/skills/slurm-orchestration/SKILL.md` is the manager's copy of the same
-steps, including how it decides whether tasks share an allocation or need jobs of their own.
+After that you never touch a `poe` command again. Open Claude Code here and say what you
+want run:
+
+```
+> Run two small tasks on Tillicum for me: <task A>, and <task B>.
+> Keep me posted on progress and spend.
+```
+
+`.claude/skills/slurm-orchestration/SKILL.md` auto-loads and makes that sentence enough. It
+sizes the compute itself — one interactive allocation with several tasks as steps, or a
+batch job for work that needs a node to itself — launches, supervises, reports what each
+agent found and what it cost, and drops the allocation when the last one is done.
 
 ## The one rule
 

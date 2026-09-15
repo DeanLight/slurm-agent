@@ -10,14 +10,14 @@ poe hooks          # git pre-commit hooks
 poe init           # create the footprint, then prove it works
 ```
 
-[`docs/quickstart.ipynb`](quickstart.py) is this page as a notebook you actually run, and
-it goes further: past setup into two real development tasks, running as two steps on one
-allocation. Use it on a new machine and read this page when a step needs explaining.
+[`docs/quickstart.ipynb`](quickstart.py) is this page as a notebook you actually run. Use
+it on a new machine and read this page when a step needs explaining. It covers setup and
+stops there.
 
-After that, you do not run it by hand. Open Claude Code in this repo and say *"run these
-tasks on Tillicum"* — `.claude/skills/slurm-orchestration/SKILL.md` auto-loads and is the
-manager's copy of the same steps, including how it decides whether tasks share one
-allocation or need jobs of their own.
+The work itself you never drive by hand. Open Claude Code in this repo and say *"run these
+tasks on Tillicum, keep me posted on progress and spend"* —
+`.claude/skills/slurm-orchestration/SKILL.md` auto-loads and takes the whole job: sizing the
+compute, launching, supervising, reporting, and tearing down.
 
 ```bash
 poe nb             # pair the notebooks, including the quick start
