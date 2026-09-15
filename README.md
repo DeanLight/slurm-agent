@@ -16,11 +16,15 @@ uv sync --all-groups && poe hooks && poe init
 ```
 
 Then run **[docs/quickstart.ipynb](docs/quickstart.py)** once on the new machine
-(`poe nb` pairs it first). It walks `init` → `hc` → one allocation carrying two real
-agents, one **interactive** and one **batch**, both pushing to a throwaway PR you look at
-and never merge. `poe hc` proves the wiring; the quick start proves the wiring carries an
-agent, for about a dollar. Commit it with its outputs — they are the proof this clone
-works.
+(`poe nb` pairs it first). It walks `init` → `hc --full` → **one** allocation carrying two
+real development tasks as two steps. `poe hc` proves the wiring; the quick start proves the
+wiring carries an agent, for about a dollar. Nothing is pushed and there is no pull request:
+each task writes a notebook under its own run root, which you read with `poe agent-logs`.
+Commit the quick start with its outputs — they are the proof this clone works.
+
+After that, you do not run it by hand. Open Claude Code here and say *"run these tasks on
+Tillicum"*: `.claude/skills/slurm-orchestration/SKILL.md` is the manager's copy of the same
+steps, including how it decides whether tasks share an allocation or need jobs of their own.
 
 ## The one rule
 
@@ -52,7 +56,7 @@ loop you can stop and restart at will.
 | `poe notify-test` | Really send, from here and from the cluster |
 | `poe monitor-*` | The change-gated usage digest and its schedule |
 | `poe session-new NAME --into DIR` | Scaffold a session notebook in the repo it is about |
-| `poe agent-run SMOKE-x --job J --agent smoke` | The two-minute smoke agent — see the quick start |
+| `poe agent-run TRIAL-A --job J --agent smoke` | A two-minute trial task — see the quick start |
 
 `poe --help` is the full inventory.
 

@@ -1,0 +1,163 @@
+---
+name: slurm-orchestration
+description: Be the manager for Tillicum work from a local Claude Code session — check both machines are authenticated, size the compute, launch and supervise remote agents, report what they produced, tear down. Use whenever working in the slurm-agent repo, or asked to run one or more tasks on Tillicum.
+---
+
+# Managing Tillicum work
+
+You are the **manager**, running on the researcher's laptop. It is the only machine that
+can reach Tillicum — UW 2FA on a network no sandbox is on — so everything you do runs here
+and reaches the cluster over ssh. The agents you launch run *there*.
+
+Asked to "run these tasks on Tillicum", do the five steps below in order. Do not skip
+step 1, and do not ask the human to open a pull request to see the result: they read the
+agents' notebooks through `poe agent-logs`, and nothing needs to be pushed anywhere.
+
+## 1. Prove both machines can work — `poe hc --full`
+
+```bash
+poe hc --full          # add --send the first time on a machine, or after changing channels
+```
+
+This is not a formality; it is the step that stops you spending an allocation on work that
+cannot finish. Four things it proves that you would otherwise discover expensively:
+
+- **Claude is authenticated on both machines.** You are proof of the laptop's; the login
+  node's is a separate credential, and an agent without it dies at launch.
+- **Git is authenticated on both machines**, with a `--dry-run` push that proves *write*,
+  not just read. `ls-remote` succeeds on a public repo with no credential at all.
+- **An allocation outlives the ssh that asked for it** — every lease depends on it.
+- **The Claude credential reports a non-zero cost.** One reporting zero silently disarms
+  every `--max-budget-usd`, and nothing else would notice.
+
+Read the report by group. Every row sits under the machine it is about — `this laptop`,
+`the login node · <host>`, or `staged repo · agents/<kind>.yaml` with the workdir beneath.
+That heading is the answer to "where do I fix this", and the staged-repo headings are also
+the answer to "which repos does this manage": there is no registry beyond `agents/*.yaml`.
+
+A row reading `not cloned yet` is **not** a fault — a workdir is created by the first
+launch. `SKIPPED` is never a pass. On `reachable · not authenticated`, stop and ask the
+human to `ssh tillicum-login` in a terminal, answer 2FA, and leave it open; nothing else
+will work until they do, and you cannot answer 2FA for them.
+
+## 2. Size the compute — one allocation, or several jobs?
+
+This is your judgement, and it is the decision this repo exists to make well. **Tillicum
+permits one interactive allocation.** So the real question is not "how many jobs" but:
+
+> Do these tasks belong as **steps on one shared allocation**, or does one need a **batch
+> job of its own**?
+
+Each agent declares what it claims, in `gpus:` in its `agents/<kind>.yaml`:
+
+| The task | `gpus:` | How to run it |
+|---|---|---|
+| Work not on the device — a smoke run, a doc build, reading and writing files | `0` | A step on the shared allocation. Any number fit. |
+| Trains, evaluates, or otherwise holds a device | `1`+ | A step, if the allocation has spare GPUs for it. |
+| Needs the node for hours, or runs unattended overnight, or must not wait behind others | — | `poe agent-batch`. Its own job, which ends itself. |
+
+So: **two small tasks go on one allocation, as two steps.** Do not bring up a second
+allocation for the second one — you would be asking for a resource the cluster will not
+give you twice, to run something that needs no GPU at all.
+
+`launch` refuses if an agent claiming a GPU would not fit, and names the three ways out.
+An agent declaring `gpus: 0` is never refused. That check is conservative — it assumes
+every live agent claims as much as the one arriving — because over-counting costs a
+refusal you can read, and under-counting costs two agents fighting over one device hours
+later, looking like a cluster fault.
+
+Size the allocation for the tasks that *do* claim a device, and give it a walltime with
+headroom over the longest lease:
+
+```bash
+poe job-up dev --gpus 1 --time 04:00:00
+```
+
+`job-up` is idempotent: if an allocation of that name is already running you get it back,
+which is correct, not a failure. It is held in a named `tmux` session on the login node, so
+the human can watch it:
+
+```bash
+ssh -t tillicum-login tmux attach -t dev
+```
+
+## 3. Launch, one command per task
+
+```bash
+poe agent-run  TASK-A --job dev --agent smoke   --exp-id task-a
+poe agent-run  TASK-B --job dev --agent smoke-2 --exp-id task-b
+poe agent-batch TASK-C --agent experiment-runner --time 12:00:00   # the overnight case
+```
+
+Two rules that prevent the two common messes:
+
+- **Two tasks running at once need two agent configs**, because each stages into its own
+  `workdir`. Two launches racing in one checkout is the failure that looks like a cluster
+  problem for an hour. `smoke.yaml` and `smoke-2.yaml` are exactly that pair.
+- **`--exp-id` gives each run its own log directory.** Without it, two runs of one agent
+  write into the same notebook.
+
+A launch refuses rather than half-working — a dirty workdir, a missing declared key, no
+spare GPU — and every refusal is a GPU-hour not spent. Read the message, fix the named
+thing, re-run.
+
+Which brief an agent gets is its own declared property: `prompt:` in the config, a template
+in `prompts/`. That is why one launcher carries a twelve-hour experiment agent and a
+two-minute trial task. Every brief takes the same variables, under `StrictUndefined`, so a
+brief that reaches for one the launcher does not pass fails in the test suite rather than
+after the allocation is up.
+
+## 4. Supervise, and report what they produced
+
+```bash
+poe agent-status              # one line per live agent, with what each is waiting on
+poe agent-logs <session> --cells
+poe agent-watch --once        # one supervision pass: poll, decide, act, log
+poe status                    # running / queued / completed / failed, with spend
+```
+
+Poll every minute or two rather than continuously; each poll is an ssh round trip. Two
+independent progress signals sit behind these: what the agent **says** (the status block
+its hooks keep) and what is **observed** (its notebook's mtime). A run that stops saying
+things and stops writing is stuck. A run that only stops saying things is not.
+
+When an agent reaches its last round, read its notebook with `poe agent-logs --cells` —
+summarised on the login node, so a 4 MB notebook costs a few hundred tokens and never
+crosses to the laptop — and **tell the human what it found**, in your own words, with the
+cost. That report is the deliverable. Do not tell them to go and look at a PR.
+
+`agent-watch` kills on named thresholds and **proposes** renewals rather than taking them.
+Renewing means reading the notebook first, which is judgement, not a rule. Nothing is lost
+if the loop stops: it holds no state and rebuilds everything from the next poll.
+
+The two spend figures are kept apart on purpose. **GPU-hours** are real money on a real
+account; **agent tokens** are priced at API list rates by the CLI even under a
+subscription. Never add them together, and never reconcile either against an invoice.
+
+## 5. Tear down
+
+The allocation is the only thing that costs money while nobody is looking. Drop it as soon
+as the last agent is done.
+
+```bash
+poe agent-kill <session> --reason "wrong config"   # one agent, not its neighbours
+poe job-down dev                                   # the whole allocation
+poe flush --older-than 7d                          # tidy finished runs out of status
+```
+
+`flush` prunes run roots on the cluster, which is what makes runs disappear from `status` —
+`status` reads those roots rather than a local list. It keeps failures by default: their
+`agent.err` is the only record of why they died, so drop them with `--failed` only after
+reading them.
+
+## Never
+
+- **Never let an agent cancel a shared interactive allocation.** It would take down its
+  neighbours. Kill the step, or use batch, where the job is the agent's alone.
+- **Never write orchestrator files inside a staged repo.** A dirty tree blocks the next
+  launch, and that block is what stops an experiment measuring unreviewed code. Everything
+  goes under the run root, via `$SLURM_AGENT_RUN_DIR` — including an agent's notebook when
+  the notebook is evidence rather than a contribution (`log_dir: "{RUN_DIR}/…"`).
+- **Never bring up a second allocation to get around a full one.** Use batch, or wait.
+- **Never spend before step 1 passes.** Every failure it catches is cheaper there than at
+  launch, and far cheaper than at the end of a lease.

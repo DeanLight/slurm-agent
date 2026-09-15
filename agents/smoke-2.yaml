@@ -1,18 +1,23 @@
-# The smoke agent: proves the whole path works, for a few cents.
+# The second of the two trial tasks. Identical to `smoke.yaml` in every way that costs
+# money, and different in one: its own workdir.
 #
-# It is a real agent by every measure the orchestrator cares about — it stages a repo,
-# reports rounds through the shim, is watched by the same hooks and killed by the same
-# rules — and it is deliberately the smallest such thing that can exist. `poe hc` proves
-# the wiring; this proves the wiring *carries an agent*.
+# It does NOT declare a mode. How a task runs — a step on a shared interactive allocation,
+# or its own batch job — is the manager's call at launch time, made from what the task
+# actually needs, and `poe agent-run` / `poe agent-batch` is where that call is expressed.
+# Baking it in here would take the decision away from the only party that can see how busy
+# the cluster is.
 #
-# Nothing here is a secret. `requires_env` is empty on purpose: a sanity check that needs
-# a token has two ways to fail, and you learn less from either.
+# The separate workdir is not tidiness. `stage()` runs `git fetch` and `checkout --detach`
+# in the workdir, so two launches racing in one checkout is the kind of failure that looks
+# like a cluster problem for an hour. Neither half writes to the repo — their notebooks go
+# under the run root — but they do both stage it.
+#
 repo: DeanLight/slurm-agent
 # `main`, because nothing here creates a branch. These tasks only READ what they stage —
 # their notebooks go under the run root — so the ref just has to be one that always exists.
 # A ref naming a branch somebody has to create first is a setup step with no payoff.
 ref: main
-workdir: ~/work/slurm-agent-smoke
+workdir: ~/work/slurm-agent-smoke-2
 
 # Under the RUN ROOT, not the repo. A smoke run has a deliverable — a notebook proving a
 # GPU answered — but it has no business in anyone's git history, and a notebook left in the

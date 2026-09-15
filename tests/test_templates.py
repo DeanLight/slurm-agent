@@ -107,19 +107,45 @@ def test_the_smoke_brief_stays_small():
     assert smoke.max_budget_usd <= 1
 
 
-def test_the_two_smoke_halves_share_a_branch_but_not_a_tree():
-    """One PR, two staged checkouts.
+def test_the_two_trial_tasks_differ_only_in_their_workdir():
+    """Same repo, same ref, same brief, same budget — two tasks, not two modes.
 
-    Sharing the branch is the point — it is what puts both halves in one pull request.
-    Sharing a *workdir* would break them: `stage()` refuses to launch onto a dirty tree, so
-    the second half would be refused while the first still had an uncommitted notebook, and
-    a `git checkout -B` from either would yank the branch from under the other.
+    How each one runs is the manager's call at launch, so neither may pre-decide it. The
+    separate workdirs are not tidiness: `stage()` runs `git fetch` and `checkout --detach`
+    there, and two launches racing in one checkout is the kind of failure that looks like a
+    cluster problem for an hour.
     """
     a = load(ROOT / "agents" / "smoke.yaml", AgentConfig)
-    b = load(ROOT / "agents" / "smoke-batch.yaml", AgentConfig)
-    assert (a.repo, a.ref) == (b.repo, b.ref)
+    b = load(ROOT / "agents" / "smoke-2.yaml", AgentConfig)
+    assert (a.repo, a.ref, a.prompt, a.max_budget_usd) == (b.repo, b.ref, b.prompt,
+                                                           b.max_budget_usd)
     assert a.workdir != b.workdir
-    assert (a.mode, b.mode) == ("interactive", "batch")
+
+
+def test_no_shipped_agent_needs_a_branch_to_be_created_first():
+    """Setup steps with no payoff are how a "two-minute" trial becomes an afternoon.
+
+    Nothing in this repo creates a branch any more — the trial tasks only read what they
+    stage — so a ref naming one would fail at `git clone --branch` on a fresh machine, for
+    a branch whose only purpose was to have been created.
+    """
+    for kind, agent in _agents_by_kind().items():
+        assert agent.ref == "main", f"agents/{kind}.yaml stages {agent.ref!r}, which nothing creates"
+
+
+def test_the_trial_tasks_claim_no_gpu_and_cannot_touch_a_repo():
+    """Two small tasks must fit on ONE allocation, and must need no branch, PR or push.
+
+    `gpus: 0` is what makes them steps on a shared allocation rather than two jobs on a
+    cluster that permits one interactive allocation. Their output goes under the run root
+    and they hold no git tools, so there is nothing to review on GitHub to see this work —
+    `poe hc` already proves push on both machines with a dry run.
+    """
+    for kind in ("smoke", "smoke-2"):
+        agent = load(ROOT / "agents" / f"{kind}.yaml", AgentConfig)
+        assert agent.gpus == 0, f"{kind} would force an allocation of its own"
+        assert agent.log_dir.startswith("{RUN_DIR}"), f"{kind} writes into the staged repo"
+        assert not any("git" in tool for tool in agent.allowed_tools), kind
 
 
 def test_every_shipped_agent_points_at_this_repo():

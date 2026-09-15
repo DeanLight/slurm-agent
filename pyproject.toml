@@ -48,7 +48,10 @@ clean        = {cmd = "juplit clean",help = "Sync then delete all .ipynb files"}
 test         = {cmd = "pytest",      help = "Run tests"}
 check        = {cmd = "juplit check", help = "Fail if a committed notebook's outputs contradict its .py"}
 html         = {cmd = "juplit html",  help = "Render a notebook to standalone HTML"}
-skill        = {shell = "mkdir -p .claude/skills && juplit skill > .claude/skills/juplit-programming.md && echo 'wrote .claude/skills/juplit-programming.md'", help = "Install/refresh the juplit skill for Claude Code"}
+# Claude Code discovers project skills as `.claude/skills/<name>/SKILL.md` — a DIRECTORY
+# each. A flat `.claude/skills/<name>.md` is silently never loaded, which looks exactly
+# like a skill that exists and is being ignored.
+skill        = {shell = "mkdir -p .claude/skills/juplit-programming && juplit skill > .claude/skills/juplit-programming/SKILL.md && echo 'wrote .claude/skills/juplit-programming/SKILL.md'", help = "Install/refresh the juplit skill for Claude Code"}
 docs         = {cmd = "mkdocs serve", help = "Serve docs locally for preview"}
 docs-build   = {cmd = "mkdocs build", help = "Build docs site"}
 docs-deploy  = {cmd = "mkdocs gh-deploy --force", help = "Deploy docs to GitHub Pages"}

@@ -63,3 +63,38 @@ def test_the_quick_start_names_no_stale_paths():
     real = {a.workdir for a in load_agents(ROOT / "agents").values()}
     for path in re.findall(r"~/work/[\w.-]+", QUICKSTART):
         assert path in real, f"docs/quickstart.py names {path}, which no agent stages into"
+
+
+def test_every_project_skill_is_where_claude_code_looks_for_it():
+    """Claude Code discovers project skills as `.claude/skills/<name>/SKILL.md`.
+
+    A flat `.claude/skills/<name>.md` is not an error and not a warning — it is silently
+    never loaded, which looks exactly like a skill that exists and is being ignored. The
+    manager skill is the one that has to auto-load for "run this on Tillicum" to work at
+    all, so its layout is worth a test rather than a memory.
+    """
+    skills = ROOT / ".claude" / "skills"
+    flat = [p.name for p in skills.glob("*.md")]
+    assert not flat, f"these would never load; each needs its own directory + SKILL.md: {flat}"
+    assert (skills / "slurm-orchestration" / "SKILL.md").exists()
+
+
+def test_the_manager_skill_says_how_to_size_compute():
+    """The decision the human delegated is the one the skill must actually make.
+
+    "Run these two tasks on Tillicum" is answerable only if the skill states the rule: one
+    interactive allocation exists, `gpus: 0` tasks are steps on it, and batch is for work
+    that needs a node to itself.
+    """
+    skill = (ROOT / ".claude" / "skills" / "slurm-orchestration" / "SKILL.md").read_text()
+    assert "poe hc --full" in skill, "the manager must check both machines before spending"
+    assert "permits one interactive allocation" in skill
+    assert "`gpus:`" in skill and "agent-batch" in skill
+    assert "pull request" in skill, "it must say not to send the human to a PR"
+
+
+def test_docs_name_the_skill_by_its_real_path():
+    """A doc pointing at the old flat path teaches the layout that does not work."""
+    for doc in ("README.md", "CLAUDE.md", "docs/quickstart.py"):
+        text = (ROOT / doc).read_text()
+        assert "skills/slurm-orchestration.md" not in text, doc

@@ -168,6 +168,11 @@ class AgentConfig(BaseModel):
     # limit is the plan's usage window, which the CLI does not expose.
     max_budget_usd: float
     mode: Literal["interactive", "batch"] = "interactive"
+    # How many GPUs this agent claims on a SHARED interactive allocation. `0` says it needs
+    # none of its own — a smoke run, a doc build, anything whose work is not on the device —
+    # and that is what lets several of them run as steps on one allocation instead of each
+    # waiting for a job of its own. A training agent leaves it at 1 (or more).
+    gpus: int = 1
     lease: str = "04:00:00"
     max_leases: int = 4
     batch_time: str = "12:00:00"
@@ -192,6 +197,9 @@ if test():
     assert duration_seconds(agent.lease) == 14400
     # Unstated, an agent gets the experiment brief — the old behaviour, unchanged.
     assert agent.prompt == "agent_launch.md.jinja"
+    # …and claims a GPU, which is the safe default: an agent that needs one and says
+    # nothing must not be packed onto an allocation that has none left.
+    assert agent.gpus == 1
 
     try:
         AgentConfig(repo="x", ref="y", workdir="z", log_dir="d",

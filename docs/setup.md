@@ -11,8 +11,13 @@ poe init           # create the footprint, then prove it works
 ```
 
 [`docs/quickstart.ipynb`](quickstart.py) is this page as a notebook you actually run, and
-it goes further: past setup into two real trial agents, one interactive and one batch. Use
-it on a new machine and read this page when a step needs explaining.
+it goes further: past setup into two real development tasks, running as two steps on one
+allocation. Use it on a new machine and read this page when a step needs explaining.
+
+After that, you do not run it by hand. Open Claude Code in this repo and say *"run these
+tasks on Tillicum"* — `.claude/skills/slurm-orchestration/SKILL.md` auto-loads and is the
+manager's copy of the same steps, including how it decides whether tasks share one
+allocation or need jobs of their own.
 
 ```bash
 poe nb             # pair the notebooks, including the quick start
@@ -40,9 +45,10 @@ the list is wherever the answer is needed.
 **Every shipped agent points at this repo and declares no keys**, so a fresh clone or fork
 is green once you have filled in your own SMTP and Slack keys, with nothing staged yet.
 `agents/experiment-runner.yaml` is a placeholder in that sense — repoint its `repo`, `ref`
-and `workdir` at your experiment repo, and declare what it needs there. The two smoke
-agents are meant to stay pointed here: the sanity check should not depend on access to
-anything but this repo.
+and `workdir` at your experiment repo, and declare what it needs there. The two trial-task
+agents are meant to stay pointed here: a sanity check should not depend on access to
+anything but this repo, and they only ever *read* what they stage — their notebooks go
+under the run root, so nothing is pushed and there is no pull request to review.
 
 `poe init` **appends** its hosts to `~/.ssh/config` between markers, and skips entirely if
 you have already defined `tillicum-login` yourself. Your other clusters and servers are
@@ -108,8 +114,10 @@ there is nothing to copy for it.
 
 ## GitHub credentials, on both machines
 
-Agents push from the compute node, so the cluster needs its own credential (`gh auth
-login` there, or a PAT in git's credential store). Your laptop needs one too. `poe hc`
+A real experiment agent pushes its write-up from the compute node, so the cluster needs
+its own credential (`gh auth login` there, or a PAT in git's credential store). Your laptop
+needs one too. The trial tasks do not push at all — which is exactly why `hc` proves this
+rather than leaving it to them. `poe hc`
 checks both — look for the `github …` rows under each heading — because they are different
 credentials and only one of them is the one that matters at the moment it matters.
 

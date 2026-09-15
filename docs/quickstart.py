@@ -21,14 +21,25 @@
 # again whenever you doubt it. It walks the whole path in order:
 #
 # 1. `poe init` — create the local footprint, and get one report of everything
-# 2. fill `.envrc`, then `poe hc --full --send` — prove every wire carries current
-# 3. one allocation, and **two** agents on it: one **interactive**, one **batch**
+# 2. fill `.envrc`, then `poe hc --full --send` — prove every wire carries current, on
+#    **both** machines: Claude authenticated, git authenticated, and able to push
+# 3. **one** allocation, and two real development tasks running on it as two steps
 # 4. watch both from here: progress, spend, and the supervisor's decisions
-# 5. both push to the **same throwaway PR**, which you look at and never merge
+# 5. read what each produced, in place on the cluster
 # 6. tear the allocation down
 #
 # The two agents are the point. `poe hc` proves the wiring; this proves the wiring
-# *carries an agent*, in both of the modes real work uses, for about a dollar.
+# *carries an agent*, for about a dollar.
+#
+# **Nothing is pushed and there is no pull request.** Each task writes its notebook under
+# its own run root on the cluster, and you read it with `poe agent-logs`. Step 2 already
+# proved push, with a `--dry-run` from each machine, so a trial run has nothing left to
+# prove about git — and a PR you would only close is friction with no payoff.
+#
+# Once you have run this once, you do not run it again by hand. Open Claude Code in this
+# repo and say *"run these two tasks on Tillicum"*: `.claude/skills/slurm-orchestration/SKILL.md`
+# is these same five steps written for the manager, including how it decides whether tasks
+# share one allocation or need jobs of their own.
 #
 # ## Where this runs
 #
@@ -76,18 +87,20 @@
 # and it stops managing that repo. You never have to ask separately: every report below
 # heads one group per agent, so the list is wherever the answer is needed.
 #
-# **Every agent shipped here points at this repo**, on purpose. A fork should be able to
+# **Every agent shipped here points at this repo**, on purpose: a fork should be able to
 # run its whole sanity check without access to anything else, and the one repo a fork can
-# always clone and push to is itself. `agents/experiment-runner.yaml` is a placeholder in
-# exactly that sense — repoint its `repo`, `ref` and `workdir` at your experiment repo
-# when you have one. The two smoke agents are meant to stay pointed here.
+# always clone is itself. `agents/experiment-runner.yaml` is a placeholder in exactly that
+# sense — repoint its `repo`, `ref` and `workdir` at your experiment repo when you have one.
+# The two trial tasks are meant to stay pointed here; they only ever *read* what they stage.
 #
 # ## What it will cost
 #
 # One GPU for well under an hour, and two agents capped at `$1` each by
-# `agents/smoke.yaml` and `agents/smoke-batch.yaml`. The cap is a runaway guard on
-# list-priced tokens, not a bill — under a subscription the real limit is your plan's
-# usage window.
+# `agents/smoke.yaml` and `agents/smoke-2.yaml`. The cap is a runaway guard on list-priced
+# tokens, not a bill — under a subscription the real limit is your plan's usage window.
+#
+# Both tasks declare `gpus: 0`, so they cost the allocation's time rather than a device
+# each. The allocation is sized for whatever *does* claim a GPU — here, nothing.
 
 # %% [markdown]
 # ## 0. The harness
@@ -98,9 +111,7 @@
 
 # %%
 import os
-import shutil
 import subprocess
-import textwrap
 import time
 from pathlib import Path
 
@@ -140,8 +151,8 @@ print(f"repo root: {ROOT}")
 
 # %%
 # The agent configs, keyed by kind. This IS the list of repos this clone manages — there is
-# no registry behind it, and later cells read the smoke agents' branch straight out of it
-# rather than repeating it.
+# no registry behind it, and later cells read the trial tasks' settings straight out of it
+# rather than repeating them.
 from slurm_agent.config import load_agents  # noqa: E402
 
 agent_configs = load_agents()
@@ -288,162 +299,106 @@ hc = sh("uv run poe hc --full --send", timeout=1800)
 assert hc.returncode == 0, "fix the MISSING rows above before spending a GPU-hour"
 
 # %% [markdown]
-# ## 4. The throwaway branch both agents will push to
+# ## 4. The two trial tasks
 #
-# The trial runs are real launches, so they end the way real launches end: a commit,
-# pushed. Both push to **one** branch, so one PR shows both halves side by side.
+# Two small development tasks, run by two real agents. Neither touches git: each writes one
+# notebook under **its own run root** on the cluster, carrying the `nvidia-smi` output of
+# the GPU that answered. There is no branch, no PR and nothing to merge — you read the
+# result with `poe agent-logs`, and `poe flush` removes it when you are done.
 #
-# `agents/smoke.yaml` already names that branch. This cell creates it on the target repo
-# from its default branch, if it is not there yet — a shallow clone in a temp directory, so
-# nothing lands in this checkout.
+# That is on purpose twice over. Nothing this repo writes may land inside a staged repo,
+# because a dirty tree blocks the next launch. And needing to review a pull request to see
+# that a sanity check worked is friction with no payoff: `hc --full` already proved push on
+# both machines with a `--dry-run`, so the trial has nothing left to prove about git.
+#
+# Both declare `gpus: 0` — they read one line out of `nvidia-smi` and write a file — which
+# is what lets them share **one** allocation as two steps, on a cluster that permits one
+# interactive allocation at a time.
 
 # %%
-smoke = agent_configs["smoke"]
-smoke_batch = agent_configs["smoke-batch"]
-SMOKE_URL = f"https://github.com/{smoke.repo}"
+task_a = agent_configs["smoke"]
+task_b = agent_configs["smoke-2"]
 
-# One branch, two staged trees. Sharing the branch is the point — it is what makes both
-# halves land in one PR. Sharing a *tree* would not work: `stage()` refuses to launch onto
-# a dirty one, so the second half would be refused while the first still had an
-# uncommitted notebook.
-assert smoke.ref == smoke_batch.ref
-assert smoke.workdir != smoke_batch.workdir
-print(f"target: {smoke.repo} · branch: {smoke.ref}")
-print(f"interactive: {smoke.workdir}  (${smoke.max_budget_usd} cap)")
-print(f"batch:       {smoke_batch.workdir}  (${smoke_batch.max_budget_usd} cap)")
-
-# %%
-heads = sh(f"git ls-remote --heads {SMOKE_URL} {smoke.ref}", quiet=True)
-if heads.stdout.strip():
-    print(f"{smoke.ref} already exists — reusing it")
-else:
-    sh(textwrap.dedent(f"""
-        tmp=$(mktemp -d) && git clone --depth 1 {SMOKE_URL} "$tmp" \\
-          && git -C "$tmp" push origin HEAD:refs/heads/{smoke.ref} \\
-          && rm -rf "$tmp"
-    """).strip())
+# Two tasks at once need two agent configs: each stages into its own workdir, and two
+# launches racing in one checkout is the failure that looks like a cluster problem.
+assert task_a.workdir != task_b.workdir
+assert (task_a.gpus, task_b.gpus) == (0, 0)
+for name, cfg in (("task A", task_a), ("task B", task_b)):
+    print(f"{name}: agents/{'smoke' if cfg is task_a else 'smoke-2'}.yaml · "
+          f"{cfg.gpus} gpu · ${cfg.max_budget_usd} cap · notebook under its run root")
 
 # %% [markdown]
-# Open the PR now, so both agents push into something you can watch fill up. `gh` is the
-# quick way; if you do not have it, click the URL this cell prints.
+# ## 5. One allocation, sized for what the tasks claim
 #
-# **Do not merge it.** It is a sanity check, and its whole content is two notebooks saying
-# which GPU answered.
-
-# %%
-if shutil.which("gh"):
-    sh(f"gh pr create --repo {smoke.repo} --head {smoke.ref} --draft "
-       f'--title "Smoke: slurm-agent end-to-end sanity check (do not merge)" '
-       f'--body "Two trial agents — one interactive, one batch — launched by '
-       f'slurm-agent. Evidence only. Close this without merging."')
-    sh(f"gh pr view --repo {smoke.repo} {smoke.ref} --json url,number,commits")
-else:
-    print(f"open it here: {SMOKE_URL}/compare/{smoke.ref}?expand=1")
-
-# %% [markdown]
-# ### Git credentials, on both machines
+# This is the decision the manager makes, and here it makes itself: two tasks that claim no
+# GPU fit as two `--overlap` **steps** on one allocation. Tillicum permits **one**
+# interactive allocation, so a second job for the second task is not a tidier version of
+# this — it is asking for a thing the cluster will not give you twice, to run work that
+# needs no device at all.
 #
-# The agents push **from the compute node**, so the cluster needs its own credential for
-# the repo — `gh auth login` there, or a PAT in git's credential store. Your laptop needs
-# one too, for the branch cell above.
+# Batch is for the other shape: a task that needs the node for hours, runs overnight, or
+# must not wait behind anything. That is `poe agent-batch`, which submits a job that brings
+# up its own GPU and **ends itself** when the agent exits. Neither of these tasks is that,
+# so neither uses it.
 #
-# `poe hc` checks both, because they are different credentials and only one of them is the
-# one that matters at the moment it matters: the laptop's you notice immediately, the login
-# node's decides whether an agent can push the notebook a GPU-hour produced. Look for the
-# `github …` rows under each heading. `hc --full` adds a `--dry-run` push, which is the
-# only thing that actually proves **write** access — `ls-remote` succeeds on a public repo
-# with no credential at all.
-#
-# And if it is missing anyway, you do not silently lose the run: step 4 of the smoke brief
-# tells the agent to report `needs_human` on a rejected push rather than work around it,
-# and `poe agent-status` shows it waiting.
-
-# %% [markdown]
-# ## 5. One allocation
-#
-# `job-up` is idempotent: run it twice and you get the same job back, not a second one.
-# Tillicum permits **one** interactive allocation, which is exactly why the next two agents
-# share this one as `--overlap` steps.
-#
-# Held in `tmux` on the login node by default, so you can attach to it and watch — the
+# `job-up` is idempotent: run it twice and you get the same job back, which is correct, not
+# a failure. It is held in `tmux` on the login node, so you can attach and watch — the
 # `attach:` line it prints is the command.
 
 # %%
-sh("uv run poe job-up smoke --gpus 1 --time 01:00:00")
+sh("uv run poe job-up dev --gpus 1 --time 01:00:00")
 
 # %% [markdown]
-# ## 6. The interactive agent
+# ## 6. Both tasks, onto that one allocation
 #
-# This is the mode you use when you are at the desk: the agent holds a step on the shared
-# allocation, works in leases, and the supervisor renews or kills it.
+# One command each. `--exp-id` gives each run its own log directory, so two runs never write
+# into one notebook. A launch refuses before anything expensive — a dirty workdir, an
+# unfilled declared key, or no spare GPU for an agent that claims one — and every refusal is
+# a GPU-hour not spent.
 #
-# `--exp-id` gives it its own log directory, so the two halves cannot collide on one
-# notebook. Launch refuses before anything expensive if the staged tree is dirty or a
-# declared key is unfilled.
+# Neither is refused here, because both declare `gpus: 0`.
 
 # %%
-run_i = sh("uv run poe agent-run SMOKE-interactive --job smoke --agent smoke "
-           "--exp-id smoke-interactive")
+run_a = sh("uv run poe agent-run TRIAL-A --job dev --agent smoke --exp-id trial-a")
+
+# %%
+run_b = sh("uv run poe agent-run TRIAL-B --job dev --agent smoke-2 --exp-id trial-b")
 
 # %% [markdown]
-# ## 7. Watch it, from here
+# ## 7. Watch both, from here
 #
 # Three different questions, three commands:
 #
 # * `agent-status` — what each agent says it is doing, and what it has cost
-# * `agent-logs --cells` — the notebook's cells, summarised **on the login node**, so a
-#   4 MB notebook costs a few hundred tokens and is never copied to the laptop
+# * `agent-logs --cells` — a notebook's cells, summarised **on the login node**, so a 4 MB
+#   notebook costs a few hundred tokens and is never copied to the laptop
 # * `agent-watch --once` — one supervision pass: poll, decide, act, log
 #
-# Two independent progress signals sit behind these: what the agent *says* (the status
-# block its hooks keep) and what is *observed* (the notebook's mtime). A run that stops
-# saying anything and stops writing is stuck; a run that only stops saying things is not.
+# Two independent progress signals sit behind these: what an agent *says* (the status block
+# its hooks keep) and what is *observed* (its notebook's mtime). A run that stops saying
+# anything **and** stops writing is stuck; one that only stops saying things is not.
+#
+# Both should reach `round 2/2` within a couple of minutes. Poll, rather than watching
+# continuously — each poll is an ssh round trip.
+
+# %%
+def _session(p):
+    """The session id out of a launch's output."""
+    return p.stdout.split("session ")[-1].strip().split()[0] if "session " in p.stdout else ""
+
+
+session_a, session_b = _session(run_a), _session(run_b)
+print("task A:", session_a or "(read it from the launch output above)")
+print("task B:", session_b or "(read it from the launch output above)")
 
 # %%
 for _ in range(10):
     p = sh("uv run poe agent-status", quiet=True)
     print(p.stdout.strip() or "no remote agents")
-    if "round 3/3" in p.stdout:
-        print("\ninteractive half reported done")
+    if p.stdout.count("round 2/2") >= 2:
+        print("\nboth tasks reported done")
         break
     time.sleep(30)
-
-# %%
-session_i = run_i.stdout.split("session ")[-1].strip().split()[0] if "session " in run_i.stdout else ""
-print("session:", session_i or "(read it from the launch output above)")
-if session_i:
-    sh(f"uv run poe agent-logs {session_i} --cells")
-
-# %% [markdown]
-# ## 8. The batch agent
-#
-# The other mode: no shared allocation, no lease renewals, no laptop. `sbatch` queues it,
-# it brings up its own GPU, runs, and **ends itself** when the agent exits — which is what
-# makes it the right answer for overnight work and for anything you want to run in
-# parallel with an interactive session.
-#
-# Same brief, same budget, same branch. Only two things differ, and both are declared in
-# `agents/smoke-batch.yaml` rather than passed here: `mode: batch`, and its own workdir, so
-# the two halves are not fighting over one staged checkout. How it gets a GPU is the whole
-# thing this cell is here to prove.
-
-# %%
-run_b = sh("uv run poe agent-batch SMOKE-batch --agent smoke-batch --time 00:30:00 "
-           "--exp-id smoke-batch")
-
-# %% [markdown]
-# It will sit `PENDING` in the queue for a while. That is the mode working, not failing.
-
-# %%
-for _ in range(20):
-    p = sh("uv run poe status", quiet=True)
-    print(p.stdout.strip())
-    # `status` groups by section; the batch half is done when its row lands under
-    # `completed`, which is the one place SLURM's own COMPLETED shows up next to the task.
-    if any("SMOKE-batch" in ln and "COMPLETED" in ln for ln in p.stdout.splitlines()):
-        print("\nbatch half completed")
-        break
-    time.sleep(60)
 
 # %% [markdown]
 # ## 9. What the manager saw
@@ -465,24 +420,24 @@ sh("uv run poe status")
 sh("uv run poe agent-watch --once")
 
 # %% [markdown]
-# ## 10. The PR
+# ## 10. What the two agents produced
 #
-# Two commits, from two launch modes, on one branch: one notebook per agent, each carrying
-# the `nvidia-smi` output of the GPU that actually answered. That is the artifact this
-# whole exercise exists to produce.
+# One notebook each, under their own run roots, carrying the `nvidia-smi` output of the GPU
+# that actually answered. That is the artifact this whole exercise exists to produce, and
+# it is read in place on the login node — `juplit cells` summarises it there, so a large
+# notebook costs a few hundred tokens and never crosses to the laptop.
+#
+# Nothing was pushed and there is nothing to review. That is the point: `hc --full` already
+# proved push on both machines with a `--dry-run`, so a trial run has nothing left to prove
+# about git, and a pull request you would only close is friction with no payoff.
 
 # %%
-sh(f"git ls-remote {SMOKE_URL} refs/heads/{smoke.ref}")
-if shutil.which("gh"):
-    sh(f"gh pr view --repo {smoke.repo} {smoke.ref} --json url,number,commits,files")
-else:
-    print(f"look here: {SMOKE_URL}/compare/{smoke.ref}?expand=1")
-
-# %% [markdown]
-# **Close it without merging.** The smoke agents stage **this repo** — the one repo a fork
-# is always allowed to clone and push to, which is why the sanity check targets it rather
-# than something of mine you might not have access to. Merging would commit two throwaway
-# notebooks into your own control plane.
+for label, session in (("task A", session_a), ("task B", session_b)):
+    print(f"\n===== {label} =====")
+    if session:
+        sh(f"uv run poe agent-logs {session} --cells")
+    else:
+        print("(read the session id from the launch output above)")
 
 # %% [markdown]
 # ## 11. Tear down
@@ -496,7 +451,7 @@ else:
 # died.
 
 # %%
-sh("uv run poe job-down smoke")
+sh("uv run poe job-down dev")
 
 # %%
 sh("uv run poe flush --older-than 0d --dry-run")
@@ -515,19 +470,21 @@ sh("uv run poe flush --older-than 0d --dry-run")
 # | You can be reached | `notify send` under **both** headings — `--send` really delivered from each |
 # | Git can reach the repo from both machines | the `github …` rows, one per heading |
 # | It can **push**, not just read | `github … push`, from `hc --full`'s `--dry-run` probe |
-# | Claude works headlessly there, and costs something | `agent credential` — `hc --full` asserts `total_cost_usd > 0` |
+# | Claude works headlessly on **both** machines, and costs something | `agent credential`, under each heading — `hc --full` asserts `total_cost_usd > 0` |
 # | An allocation outlives the ssh that asked for it | `allocation probe`, in the mode you configured |
 # | An allocation comes up and is attachable | `job-up`, and the `attach:` line it printed |
 # | Staging refuses to launch onto a dirty tree | `agent-run` preflighted before spending |
-# | The interactive path works end to end | `SMOKE-interactive` pushed a notebook |
-# | The batch path works end to end | `SMOKE-batch` queued, ran, and ended itself |
+# | Two tasks share one allocation as steps | both launched onto `dev`, neither refused |
+# | An agent runs, reports rounds, and produces something | each wrote a notebook under its run root |
 # | Progress and spend are visible from here | `agent-status`, `agent-logs --cells`, `status` |
 # | The supervisor decides and records | `agent-watch --once` |
 #
-# It did **not** prove that a kill or a lease renewal works: the smoke agents finish in two
-# minutes, long before any supervision threshold fires. And it proved nothing about a
-# cluster-side `.envrc`, because no shipped agent declares a key — the first agent of yours
-# that does is the first time those rows say anything.
+# It did **not** prove that a kill or a lease renewal works: these tasks finish in two
+# minutes, long before any supervision threshold fires. It did not exercise **batch** — for
+# tasks this small that would be the wrong call, and making the right call is the thing
+# being demonstrated. And it proved nothing about a cluster-side `.envrc`, because no
+# shipped agent declares a key; the first agent of yours that does is the first time those
+# rows say anything.
 #
 # ## When something fails
 #

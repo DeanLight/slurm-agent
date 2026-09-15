@@ -76,10 +76,18 @@ an agent. That rule is what makes a closed laptop lossless and two sessions agre
 - `poe init` **creates** the local footprint; `poe healthcheck` (alias `poe hc`) **verifies**
   it and creates nothing. `hc` is fast on purpose — run it after moving network or
   re-authing to Tillicum, where a dropped `ControlMaster` is the usual culprit.
-- `docs/quickstart.py` goes one step further than `hc`: it puts a real interactive agent
-  and a real batch agent on one allocation, each capped at `$1`. `hc` proves the wiring;
-  the quick start proves the wiring carries an agent. It is the one notebook this repo
-  commits with outputs, because those outputs are the proof a clone works.
+- `docs/quickstart.py` goes one step further than `hc`: it puts two real development tasks
+  on ONE allocation as two steps, each capped at `$1`. `hc` proves the wiring; the quick
+  start proves the wiring carries an agent. It is the one notebook this repo commits with
+  outputs, because those outputs are the proof a clone works. Nothing it runs pushes
+  anything — a trial that needed a pull request to be seen would be friction with no
+  payoff, since `hc --full` already proves push from both machines with a dry run.
+- **How much compute a task needs is the manager's call, and `gpus:` is how an agent states
+  its half of it.** `gpus: 0` means "claims no device", which is what lets several small
+  tasks share one allocation as steps — Tillicum permits one interactive allocation, so a
+  second job is not a tidier answer, it is an unavailable one. Batch is for a task that
+  needs a node for hours or runs unattended. `.claude/skills/slurm-orchestration/SKILL.md` is that
+  decision written down, and it is what an agent asked to "run this on Tillicum" follows.
 - Which brief an agent gets is its own declared property (`prompt:` in `agents/*.yaml`,
   a template in `prompts/`). Every brief takes the same variables, which is what lets one
   launcher carry a twelve-hour experiment agent and a two-minute smoke agent.

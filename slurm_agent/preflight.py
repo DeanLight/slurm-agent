@@ -540,6 +540,12 @@ def healthcheck(cluster: ClusterConfig, manager: ManagerConfig,
         checks.extend(_remote_envrc(run, cluster, agents))
 
     # ── FULL ─────────────────────────────────────────────────────────────────────
+    if full:
+        # Claude on BOTH machines, for the same reason git is checked on both: the manager
+        # runs here and the agents run there, under different credentials. A manager that
+        # cannot think is as stuck as an agent that cannot start, and finding out at launch
+        # wastes the allocation that was brought up for it.
+        checks.append(_agent_credential(local or local_runner(timeout=120), where=LAPTOP))
     if full and reachable:
         checks.append(_allocation_probe(run, cluster))
         checks.append(_agent_credential(run, where=login))
