@@ -28,6 +28,7 @@
 
 # %%
 import io
+import json
 import os
 import re
 import shutil
@@ -54,6 +55,7 @@ from slurm_agent.config import (
     missing_env,
 )
 from slurm_agent.notify import NotifyConfig
+from slurm_agent.tasks import TaskConfig
 from slurm_agent.remote import Runner, RemoteError, local_runner, quote, remote_path
 
 log = structlog.get_logger(__name__)
@@ -450,7 +452,7 @@ def healthcheck(cluster: ClusterConfig, manager: ManagerConfig,
                 send: bool = False, envrc: Path | None = None,
                 env: dict[str, str] | None = None, ssh_dir: Path | None = None,
                 notify: "NotifyConfig | None" = None, notify_test=None,
-                local: Runner | None = None,
+                local: Runner | None = None, tasks: "TaskConfig | None" = None,
                 created: dict[tuple[str, str], str] | None = None) -> list[Check]:
     """Is everything wired and working? FAST tier by default; `--full` adds the slow proofs.
 
@@ -546,6 +548,11 @@ def healthcheck(cluster: ClusterConfig, manager: ManagerConfig,
         # cannot think is as stuck as an agent that cannot start, and finding out at launch
         # wastes the allocation that was brought up for it.
         checks.append(_agent_credential(local or local_runner(timeout=120), where=LAPTOP))
+        # Notion, because a launch with no task id is not allowed and `poe task-new` is how
+        # one is got. Failing here costs a few cents; failing at launch costs the
+        # allocation that was brought up for the work.
+        if tasks is not None:
+            checks.append(_task_database(local or local_runner(timeout=300), tasks))
     if full and reachable:
         checks.append(_allocation_probe(run, cluster))
         checks.append(_agent_credential(run, where=login))
@@ -866,6 +873,33 @@ def _allocation_probe(run: Runner, cluster: ClusterConfig) -> Check:
                      fix="try the other allocation_mode in config/cluster.yaml")
 
 
+def _task_database(run: Runner, cfg: "TaskConfig") -> Check:
+    """Can a headless session actually reach the Tasks database from here?
+
+    Two things at once, and they fail the same way from the outside: the Notion MCP being
+    reachable and authenticated, and `data_source` in `config/tasks.yaml` naming a database
+    that exists. Proving them together is enough, because the fix for either is a sentence.
+    """
+    from slurm_agent import tasks as task_mod
+
+    argv = task_mod.task_argv(cfg, (
+        f"Fetch the Notion data source {cfg.data_source} and reply with its title and "
+        "nothing else. Do not create or modify anything."))
+    try:
+        raw = run(" ".join(quote(a) for a in argv))
+        result = json.loads(raw[raw.index("{"):])
+    except (RemoteError, ValueError) as exc:
+        return Check(name="task database", ok=False, detail=str(exc)[:140],
+                     fix="check config/tasks.yaml and that the Notion MCP is authorised")
+    title = str(result.get("result", "")).strip()
+    ok = not result.get("is_error") and bool(title)
+    return Check(name="task database", ok=ok,
+                 detail=f"{cfg.data_source.split('://')[-1][:8]}… is {title[:60]!r}" if ok
+                 else title[:140] or "the session returned nothing",
+                 fix=None if ok else
+                 "authorise the Notion MCP here, or fix data_source in config/tasks.yaml")
+
+
 def _agent_credential(run: Runner, *, where: str = LAPTOP) -> Check:
     """Headless claude auth on the cluster, AND that it reports a non-zero cost.
 
@@ -1123,6 +1157,26 @@ if test():
     # but never the askpass repetition, which is never the cause.
     odd = "ssh_askpass: exec(...): No such file\nkex_exchange_identification: bad banner"
     assert ssh_reason(odd) == "kex_exchange_identification: bad banner"
+
+
+# %%
+if test():
+    # The task database is proved on the laptop, in the full tier, because `poe task-new`
+    # runs there — and a launch with no task id is not allowed, so this failing later means
+    # an allocation brought up for work that cannot legally start.
+    from slurm_agent.tasks import TaskConfig as _TC
+
+    cfg_t = _TC(data_source="collection://abc")
+    good = FakeRunner({"claude": '{"result": "Tasks", "is_error": false}'})
+    row = _task_database(good, cfg_t)
+    assert row.ok and "Tasks" in row.detail
+    # Bounded: the session that reads Notion may reach Notion and nothing else.
+    assert "--strict-mcp-config" in good.commands[0]
+    assert "Do not create or modify anything" in good.commands[0]
+
+    bad = FakeRunner({"claude": '{"result": "not authorised", "is_error": true}'})
+    assert _task_database(bad, cfg_t).ok is False
+    display(render([row]))
 
 
 # %%

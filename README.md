@@ -29,9 +29,12 @@ want run:
 ```
 
 `.claude/skills/slurm-orchestration/SKILL.md` auto-loads and makes that sentence enough. It
-sizes the compute itself — one interactive allocation with several tasks as steps, or a
-batch job for work that needs a node to itself — launches, supervises, reports what each
-agent found and what it cost, and drops the allocation when the last one is done.
+opens a Notion task for each piece of work (`poe task-new`, whose id it passes straight
+into the launch), sizes the compute itself — one interactive allocation with several tasks
+as steps, or a batch job for work that needs a node to itself — launches, supervises,
+reports what each agent found and what it cost, and drops the allocation when the last one
+is done. Each agent updates its own Notion row, so the run is findable long after the
+allocation is gone.
 
 ## The one rule
 
@@ -63,6 +66,7 @@ loop you can stop and restart at will.
 | `poe notify-test` | Really send, from here and from the cluster |
 | `poe monitor-*` | The change-gated usage digest and its schedule |
 | `poe session-new NAME --into DIR` | Scaffold a session notebook in the repo it is about |
+| `poe task-new "TITLE"` | Open a Notion task headlessly; prints **only** its id, for `$( )` |
 | `poe agent-run TRIAL-A --job J --agent smoke` | A two-minute trial task — see the quick start |
 
 `poe --help` is the full inventory.

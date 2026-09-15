@@ -1,0 +1,27 @@
+# The Notion Tasks database this repo grounds work in.
+#
+# A run is worth something because it is ABOUT a task, and the task carries the record
+# afterwards — so the manager opens a task before it launches anything, and hands the agent
+# the id. NO secrets here: the headless session that writes to Notion authenticates the
+# same way your own Claude Code session does.
+
+# The data source the Tasks database lives in. Fetch the database through the Notion MCP
+# once to get this; it does not change.
+data_source: collection://1e2fab53-192e-41ac-af11-50f1b2ed8193
+
+# What a task id looks like, as a regex with exactly one group. It must be specific enough
+# not to match prose: `extract_id` requires exactly one distinct match and refuses to guess,
+# because launching an agent against the wrong task is worse than not launching.
+id_pattern: '\b((?:TASK-|T\d-)\d+)\b'
+
+# Set on every task this repo opens, so a row is always attributable.
+defaults:
+  Project: slurm-agent
+
+# Only these MCP servers are reachable from the session that creates the task — no
+# filesystem, no shell, no other server.
+mcp_config: config/mcp.json
+mcp_servers: [notion]
+
+# A runaway guard on one small session that creates one row.
+max_budget_usd: 1.0

@@ -98,7 +98,48 @@ the human can watch it:
 ssh -t tillicum-login tmux attach -t dev
 ```
 
-## 3. Give each task an agent config
+## 3. Open a Notion task for each piece of work
+
+Work here is **grounded in Notion**. A run is worth something because it is about a task,
+and the task is what carries the record after the allocation is gone. So every launch gets
+a real task id, and you open it — the human named the work in a sentence, not in Notion.
+
+```bash
+TASK_A=$(poe task-new "Add a retry to the loader")
+TASK_B=$(poe task-new "Document the batch path")
+echo "$TASK_A $TASK_B"
+```
+
+`poe task-new` runs a **headless Claude session** on this laptop with only the Notion MCP
+reachable (`--strict-mcp-config`), has it create one row, and prints **the id and nothing
+else** on stdout. That is why `$( )` is enough: the friendly line and the cost go to stderr,
+where the capture cannot swallow them.
+
+Hold the ids in shell variables and pass them straight into the launch — that is how the id
+reaches the agent:
+
+```bash
+poe agent-run "$TASK_A" --job dev --agent task-a --exp-id task-a
+```
+
+`{{ task }}` in the agent's brief is that id. The brief tells the agent to open the row in
+Notion before doing anything, and to update it with what it found when it finishes. So the
+chain is: you open the task → the id crosses the shell → the agent reads the task → the
+agent writes the result back to the same row.
+
+Three ways this goes wrong, and what to do:
+
+- **`task-new` exits non-zero.** It refuses rather than guessing when the session came back
+  with no id or more than one. Read what it says on stderr; do not invent an id.
+- **The variable is empty.** Never launch with an empty task. `[ -n "$TASK_A" ] || exit 1`
+  before you spend anything.
+- **You are tempted to skip it** for something small. Do not. A run with no task is a run
+  nobody can find afterwards, which is the failure this repo exists to prevent.
+
+Tell the human the ids as soon as you have them, before anything is launched — that is
+their handle on the work, and the moment to stop you if a task is not what they meant.
+
+## 4. Give each task an agent config
 
 An agent config is what a task *is*, here. `agents/<kind>.yaml` names the repo it works in,
 the ref it stages, the workdir it stages into, where its output goes, what it may run, and
@@ -132,13 +173,16 @@ Copy `experiment-runner.yaml` and fill in, at minimum:
 Say what you wrote, and what it will cost, before you launch it. A config is the audit
 surface: it is how the human sees what an agent was allowed to do.
 
-## 4. Launch, one command per task
+## 5. Launch, one command per task
 
 ```bash
-poe agent-run  TASK-A --job dev --agent smoke   --exp-id task-a
-poe agent-run  TASK-B --job dev --agent smoke-2 --exp-id task-b
-poe agent-batch TASK-C --agent experiment-runner --time 12:00:00   # the overnight case
+poe agent-run  "$TASK_A" --job dev --agent task-a --exp-id task-a
+poe agent-run  "$TASK_B" --job dev --agent task-b --exp-id task-b
+poe agent-batch "$TASK_C" --agent experiment-runner --time 12:00:00   # the overnight case
 ```
+
+Quote the variables. A task id has no spaces today, but an unquoted empty variable silently
+becomes no argument at all, and the launch then fails somewhere far from the cause.
 
 Two rules that prevent the two common messes:
 
@@ -158,7 +202,7 @@ two-minute trial task. Every brief takes the same variables, under `StrictUndefi
 brief that reaches for one the launcher does not pass fails in the test suite rather than
 after the allocation is up.
 
-## 5. Supervise, and report what they produced
+## 6. Supervise, and report what they produced
 
 ```bash
 poe agent-status              # one line per live agent, with what each is waiting on
@@ -195,7 +239,7 @@ The two spend figures are kept apart on purpose. **GPU-hours** are real money on
 account; **agent tokens** are priced at API list rates by the CLI even under a
 subscription. Never add them together, and never reconcile either against an invoice.
 
-## 6. Tear down
+## 7. Tear down
 
 The allocation is the only thing that costs money while nobody is looking. Drop it as soon
 as the last agent is done.
@@ -227,3 +271,5 @@ reading them.
   whether the spend is worth it.
 - **Never leave an allocation up after the last task is done.** It is the only thing here
   that costs money while nobody is looking.
+- **Never launch without a task id.** Not for a quick one, not for a retry. Work that is
+  not attached to a row is work nobody can find afterwards, and the record is the point.

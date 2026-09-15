@@ -81,6 +81,15 @@ an agent. That rule is what makes a closed laptop lossless and two sessions agre
   the proof a clone works. It deliberately does not bring up an allocation or launch an
   agent — driving the machinery from a notebook is a slower, more brittle copy of what the
   manager does, and it made setup look as though it required a trial run to succeed.
+- **Work is grounded in Notion, and the id crosses a shell boundary.** The manager opens a
+  task with `poe task-new`, which runs a headless Claude session reaching only the Notion
+  MCP and prints **the id and nothing else** on stdout — everything readable goes to stderr,
+  because `TASK=$(poe task-new "…")` is the contract. That variable becomes `{{ task }}` in
+  the agent's brief, the agent opens the row, and it writes its findings back there. Logs go
+  to stderr repo-wide for the same reason: a log line captured into that variable does not
+  fail, it launches an agent against a task named after a timestamp. `extract_id` refuses
+  zero or several matches rather than guessing — a run filed under the wrong row is worse
+  than no run.
 - **The human names the work; the manager does the rest.** Every `poe` command exists so
   that an agent can drive this repo through the same surface a human would — not so a human
   has to. A skill or doc that tells the human to run `poe job-up` has handed back the job it

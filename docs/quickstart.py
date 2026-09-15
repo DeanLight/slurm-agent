@@ -23,8 +23,9 @@
 # 1. `poe init` — create the local footprint, and get one report of everything
 # 2. fill in `.envrc`
 # 3. `poe hc --full --send` — prove every wire carries current, on **both** machines:
-#    Claude authenticated, git authenticated and able to push, an allocation that outlives
-#    the ssh that asked for it, and a message that really arrives
+#    Claude authenticated, git authenticated and able to push, the Notion Tasks database
+#    reachable, an allocation that outlives the ssh that asked for it, and a message that
+#    really arrives
 # 4. hand the actual work to the manager
 #
 # **Step 4 is the whole point, and it is one sentence typed at Claude.** You do not bring
@@ -256,6 +257,22 @@ sh("uv run poe hc")
 # filesystem is shared, and a group-readable app password is the real exposure here.
 
 # %% [markdown]
+# ### And Notion, authorised here
+#
+# Work here is **grounded in Notion**: every run is about a task, and the task carries the
+# record after the allocation is gone. So the manager opens a task before it launches
+# anything, with a headless Claude session on this laptop that can reach the Notion MCP and
+# nothing else.
+#
+# That session authenticates the way your own Claude Code session does. If you have used
+# the Notion MCP from Claude Code on this machine, it is already authorised; if not, do it
+# once and `hc --full` will confirm it in the `task database` row — which proves two things
+# at once, that Notion is reachable and that `data_source` in `config/tasks.yaml` names a
+# database that exists.
+#
+# Failing here costs a few cents. Failing later costs the allocation that was brought up
+# for work that cannot legally start, because a launch with no task id is not allowed.
+#
 # ### And Claude, logged in on the cluster
 #
 # Remote agents run under your subscription, authenticated on Tillicum once:
@@ -315,16 +332,24 @@ assert hc.returncode == 0, "fix the MISSING rows above before spending a GPU-hou
 # 2. **decide the compute itself** — Tillicum permits one interactive allocation, so tasks
 #    that claim no GPU (`gpus: 0`) run as steps on one shared allocation, and only work that
 #    needs a node for hours or runs unattended goes to `poe agent-batch`;
-# 3. **write an `agents/<kind>.yaml` for each task you named**, if one does not exist —
+# 3. **open a Notion task for each piece of work you named** with `poe task-new`, which
+#    prints the id and nothing else so it can be captured into a shell variable and passed
+#    straight into the launch — that id is what the agent reads, and what it writes its
+#    findings back to. It will tell you the ids before spending anything;
+# 4. **write an `agents/<kind>.yaml` for each task**, if one does not exist —
 #    which repo and branch it works in, where it stages, where its output goes, what it may
 #    run and spend — and tell you what it wrote before launching it. That file is the audit
 #    surface: it is how you see what an agent was allowed to do;
-# 4. bring up exactly one allocation, sized for whatever actually claims a device, and
+# 5. bring up exactly one allocation, sized for whatever actually claims a device, and
 #    launch each task onto it;
-# 5. poll, and **report back in its own words** — which task, how far along, what it has
+# 6. poll, and **report back in its own words** — which task, how far along, what it has
 #    cost, and whether anything needs you;
-# 6. drop the allocation when the last task is done, because it is the only thing that costs
+# 7. drop the allocation when the last task is done, because it is the only thing that costs
 #    money while nobody is looking.
+#
+# The Notion row is the durable half of that. The manager's updates are for you now; the
+# task is what makes the run findable in six weeks, and the agent writes its findings there
+# itself.
 #
 # Ask it for an update whenever you want one; it re-derives everything from `squeue`,
 # `sacct` and the run roots on the cluster, so there is no stale local state to go wrong and
@@ -349,6 +374,7 @@ assert hc.returncode == 0, "fix the MISSING rows above before spending a GPU-hou
 # | Git can reach the repo from both machines | the `github …` rows, one per heading |
 # | It can **push**, not just read | `github … push`, from `hc --full`'s `--dry-run` probe |
 # | Claude works headlessly on **both** machines, and costs something | `agent credential`, under each heading — `hc --full` asserts `total_cost_usd > 0` |
+# | A headless session can reach the Notion Tasks database | `task database` — which is how every run gets a task id |
 # | An allocation outlives the ssh that asked for it | `allocation probe`, in the mode you configured |
 # | This clone knows which repos it manages | one `staged repo ·` heading per `agents/<kind>.yaml` |
 #
@@ -374,6 +400,7 @@ assert hc.returncode == 0, "fix the MISSING rows above before spending a GPU-hou
 # | `my keys` MISSING | Fill them in *this laptop's* `.envrc`. It only ever asks for the channels you turned on. |
 # | `notify send` MISSING under the login node | The cluster could not send — a different egress path from your laptop's. |
 # | `agent credential` MISSING | `ssh tillicum-login` and run `claude` once, interactively. |
+# | `task database` MISSING | Authorise the Notion MCP in Claude Code here, or fix `data_source` in `config/tasks.yaml`. |
 # | `github …` MISSING | That machine has no git credential for the repo. `gh auth login` there, or a PAT in git's credential store. |
 # | `github … push` MISSING | It can read but not write. The credential needs the repo scope. |
 # | `clone` says `not cloned yet` | Not a fault. A workdir is created by the first launch, not by setup. |

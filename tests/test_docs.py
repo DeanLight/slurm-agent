@@ -20,7 +20,7 @@ QUICKSTART = (ROOT / "docs" / "quickstart.py").read_text()
 # Every row name the quick start cites. Adding a row is free; renaming one must either
 # update the doc or fail here.
 CITED = ["reachable", "my keys", "notify send", "agent credential", "allocation probe",
-         "ssh config", ".envrc", "run root", "clone", "worktree", "tmux"]
+         "ssh config", ".envrc", "run root", "clone", "worktree", "tmux", "task database"]
 
 
 def _every_row() -> list[preflight.Check]:
@@ -40,6 +40,8 @@ def _every_row() -> list[preflight.Check]:
         full=True, send=True, envrc=ROOT / "templates" / "envrc.example",
         env={"SLURM_AGENT_SMTP_HOST": "s"}, ssh_dir=ROOT / "ssh_config_templates",
         notify=NotifyConfig(channels=["email"]), local=runner,
+        tasks=__import__("slurm_agent.tasks", fromlist=["TaskConfig"]).TaskConfig(
+            data_source="collection://abc"),
         notify_test=lambda: [("local", True, "sent"), ("cluster", True, "sent")])
 
 
@@ -127,3 +129,28 @@ def test_the_quick_start_stops_at_setup():
         assert f'sh("uv run {command}' not in src, f"the quick start still runs {command}"
     assert "poe hc --full --send" in src, "it must still prove the machines"
     assert "Hand the work to the manager" in src
+
+
+def test_the_manager_skill_grounds_work_in_notion():
+    """A run with no task id is a run nobody can find afterwards.
+
+    The chain has four links and the skill has to state all of them, because each one is
+    invisible from the next: the manager opens the task, the id crosses a shell boundary in
+    a variable, the launch puts it in the agent's brief, and the agent writes back to that
+    same row.
+    """
+    skill = (ROOT / ".claude" / "skills" / "slurm-orchestration" / "SKILL.md").read_text()
+    assert "$(poe task-new" in skill, "it must show the capture, not describe it"
+    assert 'poe agent-run "$TASK_A"' in skill, "the id must be shown reaching the launch"
+    assert "Never launch without a task id" in skill
+    assert "{{ task }}" in skill, "it must say which brief variable the id becomes"
+
+
+def test_the_agent_brief_reads_and_updates_its_task():
+    """The other end of the chain. The id is useless if the agent ignores it."""
+    brief = " ".join((ROOT / "prompts" / "agent_launch.md.jinja").read_text().split())
+    assert "Open it first" in brief and "Notion MCP" in brief
+    assert "Update {{ task }} in Notion" in brief
+    # And it must refuse rather than guess, because working under the wrong row files real
+    # effort against someone else's record.
+    assert "cannot find {{ task }} in Notion" in brief

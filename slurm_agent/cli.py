@@ -55,6 +55,13 @@ def _notify_config():
     return load("config/notify.yaml", NotifyConfig)
 
 
+def _task_config():
+    """config/tasks.yaml — the Notion database work is grounded in."""
+    from slurm_agent.tasks import TaskConfig
+
+    return load("config/tasks.yaml", TaskConfig)
+
+
 def _manager() -> ManagerConfig:
     return load("config/manager.yaml", ManagerConfig)
 
@@ -107,7 +114,8 @@ def init(send: bool = True) -> None:
     # same things — and a creation failure got told twice, the first time in ssh's words.
     created = preflight.init(cluster, manager, agents, run)
     _report(preflight.healthcheck(cluster, manager, agents, run, full=True, send=send,
-                                  notify=_notify_config(), created=created,
+                                  notify=_notify_config(), tasks=_task_config(),
+                                  created=created,
                                   notify_test=_notify_test if send else None))
 
 
@@ -118,6 +126,7 @@ def healthcheck(full: bool = False, send: bool = False) -> None:
 
     _report(preflight.healthcheck(_cluster(), _manager(), _agents(), _runner(),
                                   full=full, send=send, notify=_notify_config(),
+                                  tasks=_task_config(),
                                   notify_test=_notify_test if send else None))
 
 
@@ -363,6 +372,32 @@ def monitor_uninstall() -> None:
 
     monitor.cron_write(None)
     print("removed: the slurm-agent monitor crontab block")
+
+
+@app.command(name="task-new")
+def task_new(title: str, body: str | None = None) -> None:
+    """Open one Notion task headlessly and print its id — and ONLY its id.
+
+    Built to be read by a shell, because that is how a task id reaches an agent:
+
+        TASK_A=$(poe task-new "Add a retry to the loader")
+        poe agent-run "$TASK_A" --job dev --agent task-a
+
+    So stdout is one token. Everything a human wants to read goes to stderr, where `$( )`
+    will not swallow it and a pipeline will not be corrupted by it.
+    """
+    import sys
+
+    from slurm_agent import tasks
+    from slurm_agent.remote import local_runner
+
+    cfg = load("config/tasks.yaml", tasks.TaskConfig)
+    try:
+        task_id, cost = tasks.create_task(cfg, title, local_runner(timeout=300), body=body)
+    except tasks.TaskError as exc:
+        raise SystemExit(f"could not open a task: {exc}")
+    print(f"opened {task_id}: {title} (${cost:.3f})", file=sys.stderr)
+    print(task_id)
 
 
 @app.command(name="session-new")
