@@ -366,9 +366,18 @@ def kill_step(view: AgentView, run: Runner, *, reason: str) -> str:
     return target or ""
 
 
+# `%i|%j`, quoted. The old `--Format=StepID:|,Name:|` meant those pipes as literal field
+# suffixes and sent them to the REMOTE shell unquoted, where a pipe is a pipe: every kill
+# died on `syntax error: unexpected end of file`, and a kill that fails leaves an agent
+# burning an allocation. Same bug as `launch._agents_on`, found in the second place by a
+# smoke run rather than on a cluster.
+STEP_FORMAT = "%i|%j"
+
+
 def _step_of(view: AgentView, run: Runner) -> str | None:
     """The job step this agent occupies, so a kill does not take its neighbours down."""
-    out = run(f"squeue --job={quote(view.job_id)} --steps --noheader --Format=StepID:|,Name:|")
+    out = run(f"squeue --job={quote(view.job_id)} --steps --noheader "
+              f"--format={quote(STEP_FORMAT)}")
     for line in out.splitlines():
         fields = [f.strip() for f in line.split("|")]
         if len(fields) >= 2 and view.session_id[:8] in fields[1]:

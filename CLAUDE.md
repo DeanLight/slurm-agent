@@ -130,7 +130,18 @@ an agent. That rule is what makes a closed laptop lossless and two sessions agre
 - Source lives in `slurm_agent/` as jupytext `py:percent` paired notebooks with `if test():`
   blocks beside each function. Read the juplit skill (`poe skill`) before editing one.
 - Everything that touches the cluster takes a `Runner` (see `slurm_agent/remote.py`). That
-  single seam is why the suite needs no mocking library — tests pass a dict-backed fake.
+  single seam is why the suite needs no mocking library — tests pass a dict-backed fake,
+  and a test asserts nothing outside `remote.py` (and `monitor.py`, for the local crontab)
+  imports `subprocess`. A path around the seam is a path the smoke suite cannot fake.
+- **`tests/test_smoke.py` runs every command against a fake cluster**, through the real CLI
+  and the real committed configs. `tests/fake_cluster.py` syntax-checks every command with
+  `bash -n` before answering, because "valid shell" is exactly what an ssh'd command has to
+  be — an unquoted `|` in a `--Format` string reached a user twice, and the fake found the
+  second one. Both runner factories are replaced with something that FAILS, so a smoke run
+  cannot quietly shell out: the first version of that fixture patched `local_runner` in the
+  module that defines it rather than the one that imports it, and spent real tokens on
+  `claude -p` every run. Add a command to `COMMANDS` when you add one — a test fails if you
+  do not.
 
 ## Remote paths use `$HOME`, never `~`
 
