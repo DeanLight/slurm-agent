@@ -156,54 +156,57 @@ print(pathlib.Path.cwd())
 # allocation or a workdir.
 
 # %% [markdown]
-# ### The same thing from here
+# ### The same thing from here, as bash you can paste
 #
-# `claude -p` is that manager, printing its reply and exiting. `--output-format` defaults
-# to `text`, so stdout is the reply and `$( )` is all you need to feed one session into the
+# `claude -p` is that manager, printing its reply and exiting. `--output-format` defaults to
+# `text`, so stdout is the reply — which is all `$( )` needs to feed one session into the
 # next.
 #
-# The cell below **creates two tasks**, which is only to give this walkthrough something to
-# point at. In real use the tasks already exist — you wrote a spec, or a sync-up filed
-# them — and you skip straight to the next cell with their ids.
+# The cell below is one `%%bash` block: **copy it into a terminal and it runs unchanged.**
+# Nothing to fill in.
+#
+# Its first half opens two tasks, only so this walkthrough has something to point at — in
+# real use the rows already exist (you wrote a spec, or a sync-up filed them) and you delete
+# that half and put your own ids in `IDS`.
 
-# %%
-# !claude -p 'Open two small tasks in our Notion Tasks database, for work in this repo: (1) add a docstring example to slurm_agent/remote.py, (2) add a line to README.md describing poe status. Reply with the two task ids, one per line, and nothing else.'
+# %% language="bash"
+# IDS=$(claude -p 'Open two small tasks in our Notion Tasks database, for work in this repo:
+# (1) add a docstring example to slurm_agent/remote.py
+# (2) add a line to README.md describing poe status
+# Reply with the two task ids, one per line, and nothing else.')
+#
+# echo "opened: $IDS"
+#
+# claude -p "Pick up these tasks on Tillicum: $IDS
+#
+# Read each one in Notion to see what it asks for. Size the compute yourself.
+# Tell me what each agent produced and what it cost."
 
 # %% [markdown]
-# Put the ids in shell variables so you can see them and reuse them. In a terminal that is:
-#
-# ```bash
-# IDS=$(claude -p 'Open two tasks: … . Reply with the ids, one per line.')
-# echo "$IDS"
-# ```
-#
-# Then hand them to a **new** session as the work. Nothing but the ids is needed — it reads
-# each row itself, which is the same thing the remote agents will do, so a wrong id fails
-# here rather than after an allocation is up.
-
-# %%
-# !claude -p 'Pick up TASK-118 and TASK-119 on Tillicum. Read each task in Notion to see what it asks for, size the compute yourself, and tell me what each agent produced and what it cost.'
-
-# %% [markdown]
-# Replace `TASK-118`/`TASK-119` with the ids the previous cell printed.
-#
-# From that one sentence the manager will: run `poe hc --full`, decide the compute (two
+# From those two sentences the manager will: run `poe hc --full`, decide the compute (two
 # small tasks belong as two steps on **one** allocation — Tillicum permits one interactive
 # allocation, so a second job is not a tidier answer, it is an unavailable one), write an
 # agent config for each, launch them onto the cluster, watch them, and drop the allocation
 # when the last one is done.
 #
-# Ask for an update whenever you want one. Each `claude -p` is a fresh session and that
-# costs nothing in accuracy: everything is re-derived from `squeue`, `sacct` and the run
-# roots on the cluster, because the laptop holds nothing it cannot rebuild.
+# Ask for an update whenever you want one. This needs no ids: the manager re-derives
+# everything from `squeue`, `sacct` and the run roots on the cluster, because the laptop
+# holds nothing it cannot rebuild.
 
-# %%
-# !claude -p 'How are TASK-118 and TASK-119 doing, and what have they cost so far?'
+# %% language="bash"
+# claude -p 'How are my Tillicum runs going, and what have they cost so far?'
 
 # %% [markdown]
+# For a long run you would rather watch than poll, drop the `-p` and talk to it:
+#
+# ```bash
+# cd ~/src/slurm-agent && claude
+# > Pick up TASK-118 on Tillicum. Keep me posted on progress and spend.
+# ```
+#
 # When the work is done the durable record is the Notion row — each agent writes its own
-# findings there — and the allocation is gone. Nothing is left running and nothing is left
-# to clean up by hand.
+# findings there — and the allocation is gone, because the manager drops it. Nothing is left
+# running and nothing is left to clean up by hand.
 
 # %% [markdown]
 # ## What this proved

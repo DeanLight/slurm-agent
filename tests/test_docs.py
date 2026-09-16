@@ -131,6 +131,8 @@ def test_the_quick_start_shows_commands_rather_than_running_them_for_you():
     # Setup is init, then hc until green. Nothing else is run for you.
     assert "# !uv run poe init" in src
     assert "# !uv run poe hc --full --send" in src
+    # And the work is two bash blocks you paste, not cells you edit first.
+    assert src.count('# %% language="bash"') == 2
     for command in ("poe job-up", "poe agent-run", "poe agent-batch", "poe agent-watch",
                     "poe job-down", "poe flush", "poe status", "poe agent-logs"):
         assert f"# !uv run {command}" not in src, f"the quick start runs {command} itself"
@@ -140,36 +142,56 @@ def test_the_quick_start_shows_commands_rather_than_running_them_for_you():
     assert "A task id is enough" in src
 
 
-def _quickstart_sessions() -> list[str]:
-    """The prompt of every `claude -p` cell in the quick start."""
-    import re
-    import shlex
+def _quickstart_bash() -> list[str]:
+    """The body of every `%%bash` cell, as a terminal would receive it.
 
-    src = (ROOT / "docs" / "quickstart.py").read_text()
-    prompts = []
-    for line in src.splitlines():
-        if not line.startswith("# !claude "):
-            continue
-        words = shlex.split(line[len("# !"):])
-        assert words[:2] == ["claude", "-p"], words[:2]
-        assert len(words) == 3, f"the prompt split into pieces: {words}"
-        prompts.append(words[2])
-    return prompts
-
-
-def test_the_quick_starts_claude_commands_parse_as_shell_commands():
-    """The commands are the deliverable now, so they must be right, not just look right.
-
-    An apostrophe in a prompt — "what it's doing" — ends the single-quoted string and the
-    rest becomes shell syntax. That fails in a way that reads like Claude misbehaving
-    rather than like a quoting bug.
+    jupytext stores a cell magic as `# %% language="bash"` with the body commented out, so
+    the .py stays valid Python. What a user pastes is the uncommented body — this
+    reconstructs exactly that.
     """
-    sessions = _quickstart_sessions()
-    assert len(sessions) == 3, f"expected three sessions, found {len(sessions)}"
-    # Open the tasks, run them, ask how they are going.
-    assert "Reply with the two task ids" in sessions[0]
-    assert "on Tillicum" in sessions[1]
-    assert all("TASK-118" in s for s in sessions[1:]), "the ids must carry between sessions"
+    blocks: list[str] = []
+    body: list[str] | None = None
+    for line in (ROOT / "docs" / "quickstart.py").read_text().splitlines():
+        if line.startswith('# %% language="bash"'):
+            body = []
+            continue
+        if body is None:
+            continue
+        if line.startswith("# %%"):
+            blocks.append("\n".join(body))
+            body = None
+            continue
+        body.append(line[2:] if line.startswith("# ") else line.lstrip("#"))
+    if body is not None:
+        blocks.append("\n".join(body))
+    return blocks
+
+
+def test_the_quick_starts_bash_runs_as_pasted():
+    """It has to work unchanged in a terminal: no placeholder to edit, no syntax error.
+
+    A block containing `TASK-118` made the reader stop and substitute — exactly the friction
+    the manager exists to remove. And an apostrophe in a prompt would end the single-quoted
+    string and turn the rest into shell syntax, which reads like Claude misbehaving rather
+    than like a quoting bug.
+    """
+    import subprocess
+
+    blocks = _quickstart_bash()
+    assert len(blocks) == 2, f"expected two pasteable blocks, found {len(blocks)}"
+
+    for block in blocks:
+        done = subprocess.run(["bash", "-n", "-c", block], capture_output=True, text=True)
+        assert done.returncode == 0, f"not valid bash:\n{block}\n{done.stderr}"
+
+    opener, update = blocks
+    # The ids go into a variable and straight into the next session — nothing to fill in.
+    assert "IDS=$(claude -p" in opener
+    assert 'echo "opened: $IDS"' in opener
+    assert "Pick up these tasks on Tillicum: $IDS" in opener
+    assert "TASK-1" not in opener, "a placeholder id means the reader has to edit it"
+    # The update needs no ids: the manager re-derives everything from the cluster.
+    assert "claude -p" in update and "IDS" not in update
 
 
 def test_the_manager_skill_grounds_work_in_notion():
