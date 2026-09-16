@@ -62,6 +62,16 @@ an agent. That rule is what makes a closed laptop lossless and two sessions agre
   and `--full` adds a `--dry-run` push, because `ls-remote` succeeds on a public repo with
   no credential at all. A workdir, by contrast, is created by the first *launch*: "not
   cloned yet" is the normal state of a fresh clone and must never render as a fault.
+- **Claude's own auth is two facts on two machines, and `claude mcp list` proves neither.**
+  `claude auth status` is free and instant and says only whether you are logged in — a FAST
+  row. Each MCP grant is separate and expires separately, so every server declared in
+  `.mcp.json` (the laptop's) and `config/mcp.json` (the cluster's) gets its own row, proved
+  in the FULL tier by a headless `claude -p` that calls one read-only tool under the same
+  flags the agent gets. `claude mcp list` reports a stored approval record, not what a
+  session does: with `enableAllProjectMcpServers` it says "Pending approval" about a server
+  the manager connects to fine. And the probe must ask for a `FAILED:` sentinel, because a
+  session whose server is dead exits 0, spends its cent, and explains at length that it
+  could not help — `is_error` stays false.
 - **A key is required because something reads it, never because a list says so.** Which
   notification keys the laptop needs is derived from `config/notify.yaml`'s `channels` via
   `notify.CHANNEL_KEYS`, which the senders themselves read through. `manager.requires_env`

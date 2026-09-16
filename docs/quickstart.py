@@ -113,10 +113,19 @@ print(pathlib.Path.cwd())
 # **commented out** belongs to a staged repo on the cluster; filling it in here changes
 # nothing.
 #
-# Notion matters too, and it is easy to miss: the manager opens task rows through the MCP
-# in `.mcp.json`. If you have used Notion from Claude Code on this machine it is already
-# authorised; if not, do it once. The `task database` row proves it, and proves that
-# `data_source` in `config/tasks.yaml` names a database that exists.
+# Claude itself is checked on both machines, and in two separate ways, because they fail
+# separately. `claude auth` is free and instant and says only whether you are logged in.
+# The `mcp …` rows are the ones people miss: the manager opens Notion task rows and reads
+# GitHub through the servers in `.mcp.json`, each of which is its own OAuth grant that
+# expires on its own schedule. Being logged in to Claude does not make Notion answer.
+#
+# There is a row per server per machine — `mcp notion` and `mcp github` here, and the same
+# two on the login node for the agents, which authorise separately again. Each one runs a
+# real headless `claude -p` that calls one read-only tool, because that is the only thing
+# that proves a grant is live: `claude mcp list` reports a stored approval record, not what
+# a session actually does. `mcp notion` also proves `data_source` in `config/tasks.yaml`
+# names a database that exists. If you have used Notion and GitHub from Claude Code on a
+# machine they are already authorised; if not, run `claude` there once and approve them.
 #
 # Then re-run until green. `hc` alone is the fast tier; `--full` adds the slow proofs and
 # `--send` really delivers a test message from **both** machines.
@@ -222,8 +231,10 @@ print(pathlib.Path.cwd())
 # | You can be reached | `notify send` under **both** headings — `--send` really delivered from each |
 # | Git can reach the repo from both machines | the `github …` rows, one per heading |
 # | It can **push**, not just read | `github … push`, from `hc --full`'s `--dry-run` probe |
-# | Claude works headlessly on **both** machines, and costs something | `agent credential`, under each heading — `hc --full` asserts `total_cost_usd > 0` |
-# | The manager can reach the Notion Tasks database | `task database` — which is how a run gets a task id |
+# | Claude is logged in on **both** machines | `claude auth`, under each heading — free, so it is in the fast tier |
+# | Claude works headlessly there, and costs something | `agent credential`, under each heading — `hc --full` asserts `total_cost_usd > 0` |
+# | Every MCP server is authorised, on **both** machines | one `mcp …` row per server per heading, each proved by a real tool call |
+# | The manager can reach the Notion Tasks database | `mcp notion` — which is how a run gets a task id |
 # | An allocation outlives the ssh that asked for it | `allocation probe`, in the mode you configured |
 # | This clone knows which repos it manages | one `staged repo ·` heading per `agents/<kind>.yaml` |
 # | `tmux` is there to hold allocations | `tmux`, when `allocation_mode` is the default |
@@ -249,8 +260,10 @@ print(pathlib.Path.cwd())
 # | Everything behind it `SKIPPED` | That is the point: one broken link, not eight problems. A skip is never a pass. |
 # | `my keys` MISSING | Fill them in *this laptop's* `.envrc`. It only asks for the channels you turned on. |
 # | `notify send` MISSING under the login node | The cluster could not send — a different egress path from your laptop's. |
-# | `agent credential` MISSING | Run `claude` once interactively on that machine. |
-# | `task database` MISSING | Authorise Notion in Claude Code here, or fix `data_source` in `config/tasks.yaml`. |
+# | `claude auth` MISSING | Run `claude auth login` on that machine. |
+# | `agent credential` MISSING | Logged in, but the headless call failed or reported no cost. Run `claude` there once. |
+# | `mcp github` MISSING | Run `claude` on that machine and authorise the GitHub MCP server. |
+# | `mcp notion` MISSING | Same, for Notion — or `data_source` in `config/tasks.yaml` names nothing real. |
 # | `github …` MISSING | That machine has no git credential for the repo. `gh auth login` there, or a PAT. |
 # | `github … push` MISSING | It can read but not write. The credential needs the repo scope. |
 # | `clone` says `not cloned yet` | Not a fault. A workdir is created by the first launch. |

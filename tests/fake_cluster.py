@@ -51,6 +51,11 @@ ANSWERS: list[tuple[str, str]] = [
      ' "run_dir": "~/.slurm-agent/runs/4f2cabcd", "mode": "interactive"}'),
     (r"cat \S*status\.json",
      '{"state": "running", "round": "1/2", "notebook": "/run/4f2cabcd/evidence/smoke.ipynb"}'),
+    # Two different claude calls, and they must not answer each other's question:
+    # `claude auth status` is the free one in the fast tier, `claude -p` the one that
+    # spends. This pattern comes first because the generic one below would swallow it.
+    (r"claude auth status",
+     '{"loggedIn": true, "authMethod": "oauth_token", "apiProvider": "firstParty"}'),
     (r"claude ", '{"result": "Tasks", "total_cost_usd": 0.01, "is_error": false}'),
     (r"juplit cells", "1 markdown · 1 code\n"),
     (r"python3 -c", "ok\n"),

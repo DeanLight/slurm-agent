@@ -453,6 +453,7 @@ def healthcheck(cluster: ClusterConfig, manager: ManagerConfig,
                 env: dict[str, str] | None = None, ssh_dir: Path | None = None,
                 notify: "NotifyConfig | None" = None, notify_test=None,
                 local: Runner | None = None, tasks: "TaskConfig | None" = None,
+                mcp_path: Path | None = None, cluster_mcp_path: Path | None = None,
                 created: dict[tuple[str, str], str] | None = None) -> list[Check]:
     """Is everything wired and working? FAST tier by default; `--full` adds the slow proofs.
 
@@ -505,6 +506,11 @@ def healthcheck(cluster: ClusterConfig, manager: ManagerConfig,
     repos = sorted({a.repo for a in agents.values()})
     checks.extend(_github_access(local or local_runner(), repos, LAPTOP, push=full))
 
+    # Is claude logged in at all? Free and instant, so it is a FAST row — and it is the
+    # first thing to go wrong, because an expired OAuth grant looks exactly like a broken
+    # repo until you read the error.
+    checks.append(_claude_auth(local or local_runner(), where=LAPTOP))
+
     # ── FAST · the login node ────────────────────────────────────────────────────
     try:
         who = run("id -un").strip()
@@ -526,6 +532,8 @@ def healthcheck(cluster: ClusterConfig, manager: ManagerConfig,
         # One broken link must not render as eight independent problems.
         checks.append(Check(name="run root", ok=None, where=login,
                             detail="skipped: login node unreachable"))
+        checks.append(Check(name="claude auth", ok=None, where=login,
+                            detail="skipped: login node unreachable"))
         for repo in repos:
             checks.append(Check(name=f"github {repo}", ok=None, where=login,
                                 detail="skipped: login node unreachable"))
@@ -538,6 +546,7 @@ def healthcheck(cluster: ClusterConfig, manager: ManagerConfig,
         if cluster.allocation_mode == "tmux":
             checks.append(_tmux(run, where=login))
         checks.extend(_github_access(run, repos, login, push=full))
+        checks.append(_claude_auth(run, where=login))
         # ── FAST · each staged repo ──────────────────────────────────────────────
         checks.extend(_remote_envrc(run, cluster, agents))
 
@@ -548,14 +557,26 @@ def healthcheck(cluster: ClusterConfig, manager: ManagerConfig,
         # cannot think is as stuck as an agent that cannot start, and finding out at launch
         # wastes the allocation that was brought up for it.
         checks.append(_agent_credential(local or local_runner(timeout=120), where=LAPTOP))
-        # Notion, because a launch with no task id is not allowed and `poe task-new` is how
-        # one is got. Failing here costs a few cents; failing at launch costs the
-        # allocation that was brought up for the work.
-        if tasks is not None:
-            checks.append(_task_database(local or local_runner(timeout=300), tasks))
+        # And that its MCP servers answer. Being logged in to claude says nothing about
+        # whether Notion will: they are separate OAuth grants that expire separately, and
+        # a launch with no task id is not allowed. Failing here costs a few cents; failing
+        # at launch costs the allocation that was brought up for the work.
+        for server in mcp_servers(mcp_path or Path(".mcp.json")):
+            checks.append(_mcp_check(local or local_runner(timeout=300), server,
+                                     where=LAPTOP, tasks=tasks))
     if full and reachable:
         checks.append(_allocation_probe(run, cluster))
         checks.append(_agent_credential(run, where=login))
+        # The agent's servers, under the agent's flags. The login node holds its own OAuth
+        # grants, and the agent is the one that has to write findings back to the task.
+        cluster_mcp = cluster_mcp_path or Path("config/mcp.json")
+        servers = mcp_servers(cluster_mcp)
+        if servers:
+            inline = json.dumps({"mcpServers":
+                                 json.loads(cluster_mcp.read_text())["mcpServers"]})
+            for server in servers:
+                checks.append(_mcp_check(run, server, where=login, tasks=tasks,
+                                         mcp_config=inline))
     elif full:
         checks.append(Check(name="allocation probe", ok=None, where=login,
                             detail="skipped: login node unreachable"))
@@ -873,33 +894,103 @@ def _allocation_probe(run: Runner, cluster: ClusterConfig) -> Check:
                      fix="try the other allocation_mode in config/cluster.yaml")
 
 
-def _task_database(run: Runner, cfg: "TaskConfig") -> Check:
-    """Can a `claude` started in this repo reach the Tasks database?
+# The manager reaches Notion and GitHub through MCP servers, and an agent on the cluster
+# reaches them through its own copy — different machines, different OAuth grants, and a
+# server that is merely *declared* is not a server that answers. Which servers to prove is
+# read out of the json each machine actually uses, never listed here: declare a third one
+# and it gets a row; delete one and its row goes away with it.
+def mcp_servers(path: Path) -> list[str]:
+    """The server names a Claude Code MCP config declares, in file order."""
+    try:
+        return list(json.loads(path.read_text()).get("mcpServers", {}))
+    except (OSError, ValueError):
+        return []
 
-    Three things at once, and they fail the same way from the outside: `.mcp.json` being
-    picked up, the Notion MCP being authorised, and `data_source` in `config/tasks.yaml`
-    naming a database that exists. Proving them together is enough, because the fix for
-    each is a sentence — and it is exactly the command the manager itself will run, not a
-    lookalike, because there is no wrapper left to diverge from.
+
+# What to ask each server for: one read-only fact that only a working, authorised
+# connection can produce. A server we do not know by name still gets a row — it just gets
+# asked the generic question.
+def _mcp_probe(server: str, tasks: "TaskConfig | None") -> str:
+    if server == "notion" and tasks is not None:
+        ask = (f"fetch the data source {tasks.data_source} and reply with its title")
+    elif server == "notion":
+        ask = "reply with the title of any page you can see"
+    elif server == "github":
+        ask = "reply with the login of the authenticated user"
+    else:
+        ask = "reply with the name of one tool it offers"
+    return (f"Use the {server} MCP server to {ask}, and nothing else. Do not create or "
+            "modify anything, and use no other tool. If that server is unavailable, not "
+            "authorised, or offers you no tools, reply with exactly: "
+            "FAILED: <one short reason>")
+
+
+def _mcp_check(run: Runner, server: str, *, where: str = LAPTOP,
+               tasks: "TaskConfig | None" = None,
+               mcp_config: str | None = None) -> Check:
+    """Is this MCP server authorised *for the claude that will actually use it*?
+
+    A headless `claude -p` that calls one of the server's tools, because that is the only
+    thing that proves it. `claude mcp list` reports a stored approval record, not what a
+    session does — with `enableAllProjectMcpServers` it says "Pending approval" about a
+    server the manager connects to fine, and it says nothing at all about whether the
+    OAuth grant behind it is still good. Asking the model to answer `FAILED:` is what
+    makes the difference legible: a session whose server is dead exits 0 and cheerfully
+    explains why it could not help.
     """
-    argv = ["claude", "-p",
-            f"Fetch the Notion data source {cfg.data_source} and reply with its title and "
-            "nothing else. Do not create or modify anything, and use no other tool.",
+    argv = ["claude", "-p", _mcp_probe(server, tasks),
             "--output-format", "json", "--permission-mode", "dontAsk",
             "--max-budget-usd", "1"]
+    if mcp_config:
+        # Exactly the pair `launch.py` gives an agent: --mcp-config alone would leave the
+        # node's own servers loaded too, and prove the wrong thing.
+        argv += ["--mcp-config", mcp_config, "--strict-mcp-config"]
+    name = f"mcp {server}"
+    fix = (f"run `claude` here and authorise the {server} MCP server"
+           if where == LAPTOP else
+           f"ssh in, run `claude` once, and authorise the {server} MCP server there")
     try:
         raw = run(" ".join(quote(a) for a in argv))
         result = json.loads(raw[raw.index("{"):])
     except (RemoteError, ValueError) as exc:
-        return Check(name="task database", ok=False, detail=str(exc)[:140],
-                     fix="check config/tasks.yaml and that the Notion MCP is authorised")
-    title = str(result.get("result", "")).strip()
-    ok = not result.get("is_error") and bool(title)
-    return Check(name="task database", ok=ok,
-                 detail=f"{cfg.data_source.split('://')[-1][:8]}… is {title[:60]!r}" if ok
-                 else title[:140] or "the session returned nothing",
+        return Check(name=name, ok=False, where=where, detail=str(exc)[:140], fix=fix)
+    answer = str(result.get("result", "")).strip()
+    ok = not result.get("is_error") and bool(answer) and not answer.startswith("FAILED")
+    if ok and server == "notion" and tasks is not None:
+        detail = f"answered for {tasks.data_source.split('://')[-1][:8]}…: {answer[:60]!r}"
+        fix = f"authorise the Notion MCP, or fix data_source in config/tasks.yaml"
+    else:
+        detail = answer[:140] or "the session returned nothing"
+        if ok:
+            detail = f"answered: {answer[:80]!r}"
+    return Check(name=name, ok=ok, where=where, detail=detail,
+                 fix=None if ok else fix)
+
+
+def _claude_auth(run: Runner, *, where: str = LAPTOP) -> Check:
+    """Is claude logged in here? Free, instant, and the first thing to go wrong.
+
+    `claude auth status` costs no tokens, so this belongs in the FAST tier on both
+    machines — unlike `agent credential` below, which spends a cent to prove something
+    else entirely.
+    """
+    try:
+        raw = run("claude auth status 2>/dev/null")
+        result = json.loads(raw[raw.index("{"):])
+    except (RemoteError, ValueError) as exc:
+        return Check(name="claude auth", ok=False, where=where, detail=str(exc)[:140],
+                     fix="install claude here, then run `claude auth login`"
+                         if where == LAPTOP else
+                         "ssh in and run `claude auth login` there")
+    ok = bool(result.get("loggedIn"))
+    method = result.get("authMethod") or "unknown"
+    provider = result.get("apiProvider") or "unknown"
+    return Check(name="claude auth", ok=ok, where=where,
+                 detail=f"logged in via {method} ({provider})" if ok
+                 else "not logged in",
                  fix=None if ok else
-                 "authorise the Notion MCP here, or fix data_source in config/tasks.yaml")
+                 ("run `claude auth login`" if where == LAPTOP
+                  else "ssh in and run `claude auth login` there"))
 
 
 def _agent_credential(run: Runner, *, where: str = LAPTOP) -> Check:
@@ -947,9 +1038,13 @@ if test():
         assert rows[".envrc"].where == LAPTOP and rows["my keys"].where == LAPTOP
         assert rows["reachable"].where == login_node(cluster)
 
-        # The FAST tier spends nothing: no allocation, no tokens, no messages.
+        # The FAST tier spends nothing: no allocation, no tokens, no messages. It does
+        # ask both machines whether claude is logged in, because `claude auth status`
+        # costs nothing — but never `claude -p`, which costs a cent every time.
         assert not runner.asked("salloc")
-        assert not runner.asked("claude")
+        assert not runner.asked("claude -p")
+        assert runner.asked("claude auth status")
+        assert rows["claude auth"].where == login_node(cluster)
         assert rows["notify send"].ok is None
         display(render(list(rows.values())))
 
@@ -1163,23 +1258,68 @@ if test():
 
 # %%
 if test():
-    # The task database is proved on the laptop, in the full tier, because `poe task-new`
-    # runs there — and a launch with no task id is not allowed, so this failing later means
-    # an allocation brought up for work that cannot legally start.
+    # Being logged in and having a working MCP server are two different facts that fail
+    # separately, so they are two rows.
+    logged_in = FakeRunner({"claude auth status":
+                            '{"loggedIn": true, "authMethod": "oauth_token", '
+                            '"apiProvider": "firstParty"}'})
+    row = _claude_auth(logged_in)
+    assert row.ok and "oauth_token" in row.detail and row.where == LAPTOP
+    # Free: no tokens, which is why it is a FAST row on both machines.
+    assert "-p" not in logged_in.commands[0]
+    assert _claude_auth(FakeRunner({"claude auth status": '{"loggedIn": false}'})).ok is False
+    # An old claude with no `auth` subcommand must read as "not logged in", not as a crash.
+    assert _claude_auth(FakeRunner({})).ok is False
+    display(render([row]))
+
+
+# %%
+if test():
+    # Which servers get a row is read out of the json, never listed here — declare a third
+    # and it gets proved; delete one and its row goes with it.
+    with tempfile.TemporaryDirectory() as tmp:
+        cfg_p = Path(tmp) / "mcp.json"
+        cfg_p.write_text('{"_comment": "x", "mcpServers": {"notion": {}, "github": {}}}')
+        assert mcp_servers(cfg_p) == ["notion", "github"]
+    assert mcp_servers(Path("/nonexistent/mcp.json")) == []
+
+
+# %%
+if test():
+    # Notion is proved by fetching the configured data source, which makes one row carry
+    # both facts a launch depends on: the server answers, and `data_source` names something
+    # real. A launch with no task id is not allowed, so this failing later means an
+    # allocation brought up for work that cannot legally start.
     from slurm_agent.tasks import TaskConfig as _TC
 
     cfg_t = _TC(data_source="collection://abc")
     good = FakeRunner({"claude": '{"result": "Tasks", "is_error": false}'})
-    row = _task_database(good, cfg_t)
-    assert row.ok and "Tasks" in row.detail
+    row = _mcp_check(good, "notion", tasks=cfg_t)
+    assert row.ok and row.name == "mcp notion" and "Tasks" in row.detail
     assert "Do not create or modify anything" in good.commands[0]
     # A plain `claude -p` from the repo root — the same thing the human types, so there is
-    # no wrapper here that could work while the real path does not.
+    # no wrapper here that could work while the real path does not. On the laptop it reads
+    # `.mcp.json` by itself, so it must NOT be handed a config.
     assert good.commands[0].startswith("claude -p ")
+    assert "--mcp-config" not in good.commands[0]
 
-    bad = FakeRunner({"claude": '{"result": "not authorised", "is_error": true}'})
-    assert _task_database(bad, cfg_t).ok is False
-    display(render([row]))
+    # The failure that `is_error` misses: the session succeeds, spends its cent, and
+    # explains at length that the server would not connect. Asking for a sentinel is what
+    # turns that into a red row instead of a green one holding an essay.
+    chatty = FakeRunner({"claude": '{"result": "FAILED: github MCP not connected", '
+                                   '"is_error": false}'})
+    assert _mcp_check(chatty, "github").ok is False
+    assert _mcp_check(FakeRunner({"claude": '{"result": "x", "is_error": true}'}),
+                      "github").ok is False
+
+    # On the cluster the probe carries the agent's own flags, so it proves the grant the
+    # agent will use rather than the login node's interactive one.
+    on_node = FakeRunner({"claude": '{"result": "deanlcs", "is_error": false}'})
+    node_row = _mcp_check(on_node, "github", where=login_node(cluster),
+                          mcp_config='{"mcpServers": {}}')
+    assert node_row.ok and node_row.where == login_node(cluster)
+    assert "--strict-mcp-config" in on_node.commands[0]
+    display(render([row, node_row]))
 
 
 # %%

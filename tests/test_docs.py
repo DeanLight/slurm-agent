@@ -20,7 +20,8 @@ QUICKSTART = (ROOT / "docs" / "quickstart.py").read_text()
 # Every row name the quick start cites. Adding a row is free; renaming one must either
 # update the doc or fail here.
 CITED = ["reachable", "my keys", "notify send", "agent credential", "allocation probe",
-         "ssh config", ".envrc", "run root", "clone", "worktree", "tmux", "task database"]
+         "ssh config", ".envrc", "run root", "clone", "worktree", "tmux",
+         "claude auth", "mcp notion", "mcp github"]
 
 
 def _every_row() -> list[preflight.Check]:
