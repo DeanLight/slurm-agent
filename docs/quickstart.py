@@ -213,6 +213,35 @@ print(pathlib.Path.cwd())
 # > Pick up TASK-118 on Tillicum. Keep me posted on progress and spend.
 # ```
 #
+# ### Watching the manager from your phone
+#
+# Add `--remote-control` and the manager session also appears in the session list at
+# claude.ai/code and in the Claude app, where you can read the whole conversation and steer
+# it — a twelve-hour run is exactly the case it is for.
+#
+# ```bash
+# cd ~/src/slurm-agent && claude --remote-control "Tillicum manager"
+# ```
+#
+# Claude keeps running **on your laptop**: it is the same session, mirrored, making outbound
+# HTTPS only. Which matters here, because the laptop is the only machine on the network that
+# reaches Tillicum, and this does not change that.
+#
+# Three things it does not do:
+#
+# * **It is interactive-only.** A `claude -p` prints and exits, so the pasted blocks above
+#   stay invisible to the console. This is the reason to run the manager as a conversation.
+# * **It does not follow the agents.** They run headless on a compute node; what they did is
+#   on the cluster, and `poe agent-logs` reads it in place. Ask the manager instead — it is
+#   the one supervising them.
+# * **The repo cannot turn it on for you.** Claude Code ignores `remoteControlAtStartup: true`
+#   in a checked-in `.claude/settings.json` on purpose, so a clone can never put someone's
+#   session in someone else's account. Set it in **your** `~/.claude/settings.json`, or type
+#   the flag.
+#
+# It needs a Pro, Max, Team or Enterprise login (not an API key), and `ANTHROPIC_BASE_URL`
+# unset or pointing at `api.anthropic.com`.
+#
 # When the work is done the durable record is the Notion row — each agent writes its own
 # findings there — and the allocation is gone, because the manager drops it. Nothing is left
 # running and nothing is left to clean up by hand.
