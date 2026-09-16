@@ -20,20 +20,25 @@ Then run **[docs/quickstart.ipynb](docs/quickstart.py)** once on the new machine
 `hc --full --send`, and it stops. Commit it with its outputs — they are the proof this
 clone works.
 
-After that you never touch a `poe` command again — you talk to the manager. Interactively:
+After that you never touch a `poe` command again — you talk to the manager, and a task id
+is the whole interface:
 
 ```
-> Run two small tasks on Tillicum for me: <task A>, and <task B>.
-> Keep me posted on progress and spend.
+cd ~/src/slurm-agent && claude
+> Pick up TASK-118 on Tillicum. Keep me posted on progress and spend.
 ```
 
-or from a script or notebook, where its reply feeds the next thing you say:
+It reads the row in Notion, works out what the task asks for and which repo it is in, sizes
+the compute, writes the agent config, launches onto Tillicum, supervises, and reports back.
+You never name an allocation or a workdir.
+
+From a script or notebook it is the same manager, printing its reply and exiting — so one
+session can feed the next:
 
 ```bash
-cd ~/src/slurm-agent
 IDS=$(claude -p 'Open two Notion tasks: <A>, and <B>. Reply with the ids, one per line.')
 echo "$IDS"
-claude -p "Run $IDS on Tillicum. Tell me what each produced and what it cost."
+claude -p "Pick up $IDS on Tillicum. Tell me what each produced and what it cost."
 ```
 
 There is no wrapper: `claude` started in this root **is** the manager, because `CLAUDE.md`,
@@ -79,7 +84,6 @@ loop you can stop and restart at will.
 | `poe notify-test` | Really send, from here and from the cluster |
 | `poe monitor-*` | The change-gated usage digest and its schedule |
 | `poe session-new NAME --into DIR` | Scaffold a session notebook in the repo it is about |
-| `poe agent-run TRIAL-A --job J --agent smoke` | A two-minute trial task — see the quick start |
 
 `poe --help` is the full inventory.
 

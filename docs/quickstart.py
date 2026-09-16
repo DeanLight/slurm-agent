@@ -17,393 +17,199 @@
 # %% [markdown]
 # # Quick start: set this machine up, once
 #
-# Run this the first time you set this repo up on a laptop, and again whenever you doubt
-# it. It does one job: get the environment and config right, and prove it.
+# Two commands, then you stop typing commands. Run this on the laptop the first time you
+# set the repo up, and again whenever you doubt it.
 #
-# 1. `poe init` — create the local footprint, and get one report of everything
-# 2. fill in `.envrc`
-# 3. `poe hc --full --send` — prove every wire carries current, on **both** machines:
-#    Claude authenticated, git authenticated and able to push, the Notion Tasks database
-#    reachable, an allocation that outlives the ssh that asked for it, and a message that
-#    really arrives
-# 4. hand the actual work to the manager
+# 1. `poe init` — create the local footprint and report on everything
+# 2. `poe hc --full --send` — until it is green
+# 3. talk to Claude
 #
-# **Step 4 is the whole point, and it is one sentence typed at Claude.** You do not bring
-# up allocations, launch agents or poll them yourself — the manager does that, decides how
-# much compute the work needs, and reports progress and spend back to you. Driving it by
-# hand here would just be a slower, more brittle copy of what it already does, so this
-# notebook does not do it.
-#
-# So there is nothing to push, no branch, and no pull request to review. Step 3 proves push
-# from both machines with a `--dry-run`; after that, what agents produce is read in place on
-# the cluster and summarised to you.
+# Step 3 is the whole point. You do not bring up allocations, launch agents or poll them;
+# the manager does, and it reports progress and spend back to you. **This notebook does not
+# do it for you either** — it shows you the commands, and they are the real ones.
 #
 # ## Where this runs
 #
 # **On your laptop, in this checkout** — not on the login node. This repo is the control
-# plane: it holds your `.envrc`, edits *your* `~/.ssh/config`, and sends notifications from
-# here. Every cell below reaches Tillicum over ssh; none of them run there.
-#
-# What it does need is an **ssh session to the login node that is already authenticated**,
-# because UW 2FA cannot be answered from a notebook. Open one in a terminal and leave it
-# open — the `ControlMaster` it holds is what every cell below rides on:
+# plane. What it needs is an ssh session to the login node that is **already
+# authenticated**, because UW 2FA cannot be answered from a notebook:
 #
 # ```bash
 # ssh tillicum-login      # answer 2FA, then leave this terminal alone
 # ```
 #
-# If a cell suddenly starts timing out halfway through, that session died. Re-open it and
-# re-run the cell; nothing here loses state, because none of it is *kept* here.
+# The `ControlMaster` it holds is what every command below rides on. If something starts
+# hanging, that session died — re-open it and re-run. Nothing here loses state, because
+# nothing is *kept* here.
 #
-# ## Three places, and why the reports keep saying so
+# ## Three places, and why the report keeps saying so
 #
-# Almost every confusing thing about setting this up comes from three different machines
-# each wanting a different `.envrc`, and a report that does not say which one it means.
-# There are exactly three kinds of place:
+# Almost every confusing thing about setup comes from three machines each wanting a
+# different `.envrc`, and a report that does not say which one it means.
 #
 # | Place | What lives there | What its `.envrc` holds |
 # |---|---|---|
-# | **This laptop** | this checkout, `~/.ssh/config`, the supervision loop | the keys for **reaching you** — whatever `config/notify.yaml`'s channels need, SMTP by default |
-# | **The login node** | the run root, `tmux`, your Claude credential, its own git credential | nothing — no `.envrc` here at all |
-# | **Each staged repo on the cluster** | the repo one agent runs in | the keys **that agent** declares, e.g. `HF_TOKEN` |
+# | **This laptop** | this checkout, `~/.ssh/config`, the manager | the keys for **reaching you** — whatever `config/notify.yaml`'s channels need |
+# | **The login node** | the run root, `tmux`, a Claude credential, a git credential | nothing — no `.envrc` here |
+# | **Each staged repo on the cluster** | the repo one agent runs in | the keys **that agent** declares |
 #
-# So a key like `HF_TOKEN` is never a laptop problem. `poe hc` checks each key against the
-# machine that actually reads it, and every row of every report below sits under a heading
-# naming its machine.
+# Every row of the report below sits under a heading naming its machine, and that heading
+# is the answer to *where do I fix this*. The staged-repo headings are also the list of
+# repos this clone manages: there is no registry beyond `agents/*.yaml`.
 #
-# None of the agents shipped here declare any keys, so out of the box that third column is
-# empty and there is nothing to do on the cluster. When one of yours does declare a key,
-# `poe init` writes it into your laptop's `.envrc` **commented out**, with the remote path
-# it belongs in beside it — filling it in here would change nothing.
+# ## What it costs
 #
-# ### How it knows which repos it manages
-#
-# It reads `agents/*.yaml`, one file per agent, and nothing else. Each file names a repo,
-# a ref and the workdir it is staged into — and that is the entire list. There is no
-# registry, nothing remembered between runs, and nothing to deregister: delete the file
-# and it stops managing that repo. You never have to ask separately: every report below
-# heads one group per agent, so the list is wherever the answer is needed.
-#
-# **Every agent shipped here points at this repo**, on purpose: a fork should be able to
-# run its whole sanity check without access to anything else, and the one repo a fork can
-# always clone is itself. `agents/experiment-runner.yaml` is a placeholder in exactly that
-# sense — repoint its `repo`, `ref` and `workdir` at your experiment repo when you have one.
-# The two trial tasks are meant to stay pointed here; they only ever *read* what they stage.
-#
-# ## What it will cost
-#
-# A few cents. `hc --full` makes one real headless Claude call on each machine and holds a
-# one-minute allocation to prove it survives the ssh closing. Nothing here runs an agent.
-#
-# What the *work* costs is the manager's to report, and it keeps two figures apart on
-# purpose: **GPU-hours**, which are real money on a real account, and **agent tokens**,
-# which the CLI prices at API list rates even under a subscription. Never add them together,
-# and never reconcile either against an invoice.
+# A few cents. `hc --full` makes one real Claude call on each machine, opens a one-minute
+# allocation to prove it survives the ssh closing, and reads your Notion Tasks database.
+# Nothing here runs an agent.
 
 # %% [markdown]
-# ## 0. The harness
+# ### Run from the repo root
 #
-# One helper, because every step below is "run a `poe` task and read what it says". It
-# never raises: a failing check is something to *read*, and `poe init` failing the first
-# time is the expected path, not an accident.
+# The commands below are the real ones, so they need the real working directory.
 
 # %%
 import os
-import subprocess
-from pathlib import Path
+import pathlib
 
-
-def _root() -> Path:
-    """The repo root, wherever the kernel happened to start."""
-    for d in [Path.cwd(), *Path.cwd().parents]:
-        if (d / "pyproject.toml").exists() and (d / "slurm_agent").is_dir():
-            return d
-    raise RuntimeError("run this notebook from inside the slurm-agent checkout")
-
-
-ROOT = _root()
-os.chdir(ROOT)
-
-
-def sh(cmd: str, *, timeout: int = 900, quiet: bool = False) -> subprocess.CompletedProcess:
-    """Run a shell command at the repo root. Prints what happened; never raises."""
-    print(f"$ {cmd}\n")
-    try:
-        # COLUMNS, because `poe` output is captured rather than attached to a terminal:
-        # rich would otherwise fall back to 80 and fold the report's tables.
-        p = subprocess.run(cmd, shell=True, cwd=ROOT, timeout=timeout,
-                           capture_output=True, text=True,
-                           env={**os.environ, "COLUMNS": "110"})
-    except subprocess.TimeoutExpired:
-        print(f"!! timed out after {timeout}s — is the ssh session to the login node "
-              "still open?")
-        raise
-    if not quiet:
-        print((p.stdout or "") + (p.stderr or ""), end="")
-    print(f"\n[exit {p.returncode}]")
-    return p
-
-
-print(f"repo root: {ROOT}")
-
-# %%
-# The agent configs, keyed by kind. This IS the list of repos this clone manages — there is
-# no registry behind it. The report below heads one group per line of this, so you do not
-# have to hold the mapping in your head while reading it.
-from slurm_agent.config import load_agents  # noqa: E402
-
-for kind, cfg in load_agents().items():
-    print(f"agents/{kind}.yaml  {cfg.repo}@{cfg.ref}  ->  {cfg.workdir}")
+while not pathlib.Path("pyproject.toml").exists() and pathlib.Path.cwd() != pathlib.Path("/"):
+    os.chdir("..")
+print(pathlib.Path.cwd())
 
 # %% [markdown]
-# ## 1. `poe init` — create the local footprint
+# ## 1. `poe init`
 #
 # One report, grouped by machine, and that is the whole output. `init` creates what it can
-# and then says nothing itself; what exists afterwards is the report's to state, and what
-# it just created rides along inside the row about that thing as a `·` note. So a file it
-# could not create is not announced twice — once in ssh's words and once, correctly, as the
-# row that says the login node is unreachable.
+# and says nothing itself; what exists afterwards is the report's to state, and what was
+# just created rides along inside the row about that thing as a `·` note.
 #
-# There is no separate inventory either: the headings are the inventory — one per place,
-# one per `agents/<kind>.yaml` naming its repo, ref and workdir.
+# It creates `.envrc` at mode 0600 and the ssh host entries on **this laptop**, and the run
+# root on **the login node**. It never overwrites: an existing `.envrc` is kept, and a
+# `tillicum-login` you defined yourself means the ssh block is skipped entirely.
 #
-# What it creates, and where:
-#
-# * **on this laptop** — `.envrc` at mode 0600, and the ssh host entries appended to
-#   `~/.ssh/config` between markers (the `.envrc` and `ssh config` rows);
-# * **on the login node** — the run root every agent's files live under (the `run root`
-#   row). If it cannot reach the login node it says nothing about it: the `run root` row is
-#   about to say the same thing, better.
-#
-# It never overwrites. An existing `.envrc` is kept as-is. A `tillicum-login` you defined
-# yourself means the ssh block is skipped entirely — your other clusters and servers are
-# not touched, and nothing there is replaced.
-#
-# The `.envrc` it writes is **not** a copy of `templates/envrc.example`. It gets a header
-# written for that file — what it is, that it is read on this laptop only, which keys it
-# holds — and any key that is only read on the cluster is written **commented out**, with
-# the remote path it belongs in beside it. Filling one of those in here changes nothing.
-#
-# Then it checks everything — the **full** tier, which really sends a message on every
-# channel `config/notify.yaml` turns on, from both machines.
-#
-# **Expect this to fail the first time**, and read the failure rather than fixing it
-# blind — the `.envrc` it just wrote is full of `<secret-here>`.
+# **Expect it to fail the first time.** The `.envrc` it just wrote is full of
+# `<secret-here>`, and every failing row carries the `fix:` line for it.
 
 # %%
-sh("uv run poe init")
+# !uv run poe init
 
 # %% [markdown]
-# ## 2. Fill in **this laptop's** `.envrc`
+# ## 2. Do what the report said, then re-run it
 #
-# Only the keys the report lists under `this laptop` — the ones the channels you turned on
-# need, for reaching you. Anything written **commented out** is not yours to fill in here:
-# it belongs to a staged repo on the cluster, and §2b is where those go. Out of the box
-# there are none, because no shipped agent declares a key.
-#
-# `.envrc` is gitignored and holds the real values; the YAML names **keys** and nothing
-# committed here ever holds a value.
-#
-# Edit it in a terminal — not from this notebook, which would put secrets in an output
-# cell:
+# Work the `MISSING` rows, by machine. Usually:
 #
 # ```bash
 # $EDITOR .envrc     # replace every <secret-here> that is NOT commented out
 # chmod 600 .envrc
+#
+# ssh tillicum-login       # then, on the login node:
+#   claude                 #   log in once, interactively
+#   gh auth login          #   or put a PAT in git's credential store
 # ```
 #
-# For email you want an **app password**, not your account password. For Slack you want an
-# [incoming webhook](https://api.slack.com/messaging/webhooks) URL.
+# Only the keys the report lists under `this laptop` are yours to fill in here — the ones
+# the channels you turned on need. `config/notify.yaml` ships `channels: [email]`, so
+# Slack's webhook is not required until you add `slack` to that list. Anything written
+# **commented out** belongs to a staged repo on the cluster; filling it in here changes
+# nothing.
 #
-# **Only the channels you turned on need keys.** `config/notify.yaml`'s `channels` decides,
-# and it ships as `[email]` — so Slack's webhook is not required until you add `slack` to
-# that list. That is what optional means here: a channel that is on but cannot send is
-# worse than one that is off, because you only find out when nothing arrives.
-# `SLURM_AGENT_SMTP_PORT` has a default of 587, so it is reported as defaulted, never
-# failed.
+# Notion matters too, and it is easy to miss: the manager opens task rows through the MCP
+# in `.mcp.json`. If you have used Notion from Claude Code on this machine it is already
+# authorised; if not, do it once. The `task database` row proves it, and proves that
+# `data_source` in `config/tasks.yaml` names a database that exists.
 #
-# The fast healthcheck below says which keys are still placeholders, under the heading of
-# the machine each is read on. It creates nothing, prints names only, and reads values from
-# `.envrc` the same way every `poe` task does — via `[tool.poe] envfile`, so this repo has
-# no credentials reader of its own and nothing to leak into an output cell.
+# Then re-run until green. `hc` alone is the fast tier; `--full` adds the slow proofs and
+# `--send` really delivers a test message from **both** machines.
 
 # %%
-sh("uv run poe hc")
+# !uv run poe hc --full --send
 
 # %% [markdown]
-# ## 2b. The other `.envrc`s — one per staged repo, on the cluster
-#
-# **Nothing to do here today — skip to §3.** Every agent shipped with this repo declares
-# `requires_env: []`, so all three staged-repo rows read `declares no keys — nothing needed
-# here`. That is deliberate twice over: a sanity check that needs a credential has two
-# extra ways to fail, and an example that demands a token turns a correctly-set-up laptop
-# red over a file its owner has no reason to have created.
-#
-# It matters the moment one of *your* agents declares a key. Then it needs a different
-# file, on a different machine, holding different keys: one beside the repo that agent runs
-# in, containing exactly what its `requires_env` names — plus the notification keys if you
-# want that agent to reach you from the compute node.
-#
-# You never work the path out. The report prints it in the heading above the row, and the
-# row's `fix:` is the command. It looks like this:
-#
-# ```bash
-# scp templates/envrc.example tillicum-login:<the workdir in the heading>/.envrc
-# ssh tillicum-login 'chmod 600 <that path>'
-# ssh tillicum-login    # then $EDITOR it there
-# ```
-#
-# `poe hc` checks that file's **mode** too, and fails loudly at 0644 — Tillicum's
-# filesystem is shared, and a group-readable app password is the real exposure here.
-
-# %% [markdown]
-# ### And Notion, authorised here
-#
-# Work here is **grounded in Notion**: every run is about a task, and the task carries the
-# record after the allocation is gone. So the manager opens a task before it launches
-# anything, with a headless Claude session on this laptop that can reach the Notion MCP and
-# nothing else.
-#
-# That session authenticates the way your own Claude Code session does. If you have used
-# the Notion MCP from Claude Code on this machine, it is already authorised; if not, do it
-# once and `hc --full` will confirm it in the `task database` row — which proves two things
-# at once, that Notion is reachable and that `data_source` in `config/tasks.yaml` names a
-# database that exists.
-#
-# Failing here costs a few cents. Failing later costs the allocation that was brought up
-# for work that cannot legally start, because a launch with no task id is not allowed.
-#
-# ### And Claude, logged in on the cluster
-#
-# Remote agents run under your subscription, authenticated on Tillicum once:
-#
-# ```bash
-# ssh tillicum-login
-# claude               # log in interactively, then exit
-# ```
-#
-# `hc --full` proves it works headlessly **and** reports a non-zero cost. A subscription
-# reporting zero would silently disarm every `--max-budget-usd` in this repo, and nothing
-# else would notice.
-
-# %% [markdown]
-# ## 3. `poe hc --full --send` — every wire carries current
-#
-# `hc` alone is the fast one: run it after moving network or re-authing, when a dropped
-# `ControlMaster` is the usual culprit. `--full` adds the three slow proofs — a real
-# allocation that must outlive the ssh that asked for it, a real headless Claude call that
-# must report a non-zero cost, and a `--dry-run` push from each machine that proves **write**
-# access rather than just read. `--send` really delivers a test message from your laptop
-# *and* from Tillicum, which are two different egress paths and neither stands in for the
-# other.
-#
-# Read it by group. `MISSING` under `this laptop` is something you fix here; under a
-# `staged repo · …` heading it is something you fix over ssh, at the path in the heading.
-# A staged repo reading `not cloned yet` is **not** a problem — a workdir is created by the
-# first launch, not by setup.
 # A `SKIPPED` row is never a pass — if the login node is unreachable, everything behind it
-# is skipped rather than failed, so that one broken link does not read as eight problems.
-#
-# Everything below this point spends money.
-
-# %%
-hc = sh("uv run poe hc --full --send", timeout=1800)
-assert hc.returncode == 0, "fix the MISSING rows above before spending a GPU-hour"
+# is skipped rather than failed, so one broken link does not read as eight problems. A
+# staged repo reading `not cloned yet` **is** fine: a workdir is created by the first
+# launch, not by setup.
 
 # %% [markdown]
-# ## 4. From here on, you only talk to Claude
+# ## 3. From here on, you only talk to Claude
 #
-# Setup is done. Everything below is a `claude` session started **in this repo root**, and
-# there is no wrapper around it — the command in each cell is exactly what you would type
-# in a terminal.
-#
-# It comes up as the manager because the repo says so, in the three files Claude Code reads
-# by itself:
+# Setup is done. `claude` started **in this repo root** comes up as the manager — no
+# wrapper, no flags to remember — because of four files Claude Code reads by itself:
 #
 # | File | What it does |
 # |---|---|
-# | `CLAUDE.md` | Opens with *"if you are reading this, you are the manager"* and points at the skill |
+# | `CLAUDE.md` | Opens with *"if you are reading this, you are the manager"* |
 # | `.claude/skills/slurm-orchestration/SKILL.md` | The procedure: tasks, sizing, launching, supervising, teardown |
-# | `.mcp.json` + `.claude/settings.json` | Notion and GitHub reachable and pre-enabled, `poe` pre-approved, `.envrc` denied |
+# | `.mcp.json` | Notion and GitHub reachable |
+# | `.claude/settings.json` | Those servers pre-enabled, `poe` pre-approved, `.envrc` denied |
 #
-# So `claude` from this directory is the manager, and so is `claude -p "…"`. The only
-# difference is that `-p` prints its reply and exits, which is what makes it usable from a
-# shell: `--output-format` defaults to `text`, so **stdout is the reply**.
+# So the normal way to work is a terminal, in this directory:
 #
-# First, ask it to open the two tasks. Say what you want in your own words.
-
-# %%
-ids = sh("""claude -p 'Open two new tasks in our Notion Tasks database:
-  1. Add a retry with backoff to the dataset loader.
-  2. Document the batch launch path in the README.
-
-Create them, then reply with the two task ids, one per line, and nothing else.'""",
-         timeout=900).stdout
+# ```bash
+# cd ~/src/slurm-agent && claude
+# > Pick up TASK-118 on Tillicum. Keep me posted on progress and spend.
+# ```
+#
+# **That is the whole interface.** A task id is enough: the manager reads the row in Notion,
+# works out what the task asks for and which repo it is in, sizes the compute, writes the
+# agent config, launches onto Tillicum, supervises, and reports back. You never name an
+# allocation or a workdir.
 
 # %% [markdown]
-# Read the ids out of that reply. `extract_ids` takes exactly the number you asked for and
-# refuses otherwise — if it made one row, or three, or described what it would do without
-# doing it, that is a real disagreement about what happened, and guessing which ids it meant
-# would file real work under the wrong rows.
+# ### The same thing from here
+#
+# `claude -p` is that manager, printing its reply and exiting. `--output-format` defaults
+# to `text`, so stdout is the reply and `$( )` is all you need to feed one session into the
+# next.
+#
+# The cell below **creates two tasks**, which is only to give this walkthrough something to
+# point at. In real use the tasks already exist — you wrote a spec, or a sync-up filed
+# them — and you skip straight to the next cell with their ids.
 
 # %%
-from slurm_agent.config import load  # noqa: E402
-from slurm_agent.tasks import TaskConfig, extract_ids  # noqa: E402
-
-TASK_A, TASK_B = extract_ids(ids, load("config/tasks.yaml", TaskConfig).id_pattern, 2)
-print(f"TASK_A={TASK_A}\nTASK_B={TASK_B}")
+# !claude -p 'Open two small tasks in our Notion Tasks database, for work in this repo: (1) add a docstring example to slurm_agent/remote.py, (2) add a line to README.md describing poe status. Reply with the two task ids, one per line, and nothing else.'
 
 # %% [markdown]
-# Now format those ids into a **new** session and give it the work. In a terminal this is
-# the same two lines, with the shell holding the ids for you:
+# Put the ids in shell variables so you can see them and reuse them. In a terminal that is:
 #
 # ```bash
 # IDS=$(claude -p 'Open two tasks: … . Reply with the ids, one per line.')
 # echo "$IDS"
-# claude -p "Run $IDS on Tillicum. Tell me what each produced and what it cost."
 # ```
 #
-# The new session reads the tasks out of Notion itself — the same thing a remote agent will
-# do — so an id that is wrong fails here rather than after an allocation is up.
-#
-# From that one sentence it will: check both machines with `poe hc --full`, decide the
-# compute (two small tasks belong as two steps on **one** allocation — Tillicum permits one
-# interactive allocation, so a second job is not a tidier answer, it is an unavailable one),
-# write an agent config for each task, launch them, and report back.
+# Then hand them to a **new** session as the work. Nothing but the ids is needed — it reads
+# each row itself, which is the same thing the remote agents will do, so a wrong id fails
+# here rather than after an allocation is up.
 
 # %%
-print(sh(f"""claude -p 'Run {TASK_A} and {TASK_B} on Tillicum for me.
-
-Read each task in Notion to see what it asks for. Size the compute yourself.
-When you are done, tell me what each agent produced and what it cost.'""",
-         timeout=3600).stdout)
+# !claude -p 'Pick up TASK-118 and TASK-119 on Tillicum. Read each task in Notion to see what it asks for, size the compute yourself, and tell me what each agent produced and what it cost.'
 
 # %% [markdown]
-# Ask for an update whenever you want one. Each `claude -p` is a fresh session, and that
-# costs nothing in accuracy: it re-derives everything from `squeue`, `sacct` and the run
+# Replace `TASK-118`/`TASK-119` with the ids the previous cell printed.
+#
+# From that one sentence the manager will: run `poe hc --full`, decide the compute (two
+# small tasks belong as two steps on **one** allocation — Tillicum permits one interactive
+# allocation, so a second job is not a tidier answer, it is an unavailable one), write an
+# agent config for each, launch them onto the cluster, watch them, and drop the allocation
+# when the last one is done.
+#
+# Ask for an update whenever you want one. Each `claude -p` is a fresh session and that
+# costs nothing in accuracy: everything is re-derived from `squeue`, `sacct` and the run
 # roots on the cluster, because the laptop holds nothing it cannot rebuild.
 
 # %%
-print(sh(f"""claude -p 'How are {TASK_A} and {TASK_B} doing, and what have they cost so far?'""",
-         timeout=900).stdout)
+# !claude -p 'How are TASK-118 and TASK-119 doing, and what have they cost so far?'
 
 # %% [markdown]
-# For a long run you would rather watch than poll, drop the `-p` and talk to it:
-#
-# ```bash
-# cd ~/src/slurm-agent && claude
-# > Run TASK-118 and TASK-119 on Tillicum. Keep me posted on progress and spend.
-# ```
-#
 # When the work is done the durable record is the Notion row — each agent writes its own
-# findings there — and the allocation is gone, because the manager drops it. Nothing is left
-# running and nothing is left to clean up by hand.
+# findings there — and the allocation is gone. Nothing is left running and nothing is left
+# to clean up by hand.
 
 # %% [markdown]
 # ## What this proved
 #
-# Every line of it is a row in the report above, so you never have to take this table's
-# word for it.
+# Every line is a row in the report above, so you never have to take this table's word
+# for it.
 #
 # | Proved | The row |
 # |---|---|
@@ -414,35 +220,36 @@ print(sh(f"""claude -p 'How are {TASK_A} and {TASK_B} doing, and what have they 
 # | Git can reach the repo from both machines | the `github …` rows, one per heading |
 # | It can **push**, not just read | `github … push`, from `hc --full`'s `--dry-run` probe |
 # | Claude works headlessly on **both** machines, and costs something | `agent credential`, under each heading — `hc --full` asserts `total_cost_usd > 0` |
-# | A headless session can reach the Notion Tasks database | `task database` — which is how every run gets a task id |
+# | The manager can reach the Notion Tasks database | `task database` — which is how a run gets a task id |
 # | An allocation outlives the ssh that asked for it | `allocation probe`, in the mode you configured |
 # | This clone knows which repos it manages | one `staged repo ·` heading per `agents/<kind>.yaml` |
+# | `tmux` is there to hold allocations | `tmux`, when `allocation_mode` is the default |
+# | The run root exists on the cluster | `run root` |
 #
-# That is everything an agent needs in order to start and to finish. What it does **not**
-# prove is anything about an agent itself — whether a supervision threshold fires, whether a
-# lease renews, whether a task's own code works. Those are answered by running real work,
-# which is the manager's job and not this notebook's.
+# That is everything an agent needs in order to start and to finish. It proves nothing about
+# an agent itself — whether a supervision threshold fires, whether a task's own code works.
+# Those are answered by running real work, which is the manager's job.
 #
 # A cluster-side `.envrc` is also unproven, because no shipped agent declares a key. The
-# first agent of yours that does is the first time those rows say anything.
+# first agent of yours that does is the first time those rows say anything — and `clone` and
+# `worktree` rows only say something once a workdir exists.
 #
 # ## When something fails
 #
-# Every row says which machine it is about, so the first question — *where do I fix this?*
-# — is answered by the heading it sits under.
+# Every row says which machine it is about, so *where do I fix this* is answered by the
+# heading it sits under.
 #
 # | Symptom | Where to look |
 # |---|---|
-# | A cell hangs, then times out | The authenticated ssh session died. Re-open it; re-run. |
-# | `hc` passes but a launch fails later | Tell the manager what it said. `hc` proves the machines, not an agent's own code. |
+# | A command hangs | The authenticated ssh session died. Re-open it; re-run. |
 # | `reachable` MISSING, `not authenticated` | Open a terminal, `ssh tillicum-login`, answer 2FA, leave it open. |
 # | Everything behind it `SKIPPED` | That is the point: one broken link, not eight problems. A skip is never a pass. |
-# | `my keys` MISSING | Fill them in *this laptop's* `.envrc`. It only ever asks for the channels you turned on. |
+# | `my keys` MISSING | Fill them in *this laptop's* `.envrc`. It only asks for the channels you turned on. |
 # | `notify send` MISSING under the login node | The cluster could not send — a different egress path from your laptop's. |
-# | `agent credential` MISSING | `ssh tillicum-login` and run `claude` once, interactively. |
-# | `task database` MISSING | Authorise the Notion MCP in Claude Code here, or fix `data_source` in `config/tasks.yaml`. |
-# | `github …` MISSING | That machine has no git credential for the repo. `gh auth login` there, or a PAT in git's credential store. |
+# | `agent credential` MISSING | Run `claude` once interactively on that machine. |
+# | `task database` MISSING | Authorise Notion in Claude Code here, or fix `data_source` in `config/tasks.yaml`. |
+# | `github …` MISSING | That machine has no git credential for the repo. `gh auth login` there, or a PAT. |
 # | `github … push` MISSING | It can read but not write. The credential needs the repo scope. |
-# | `clone` says `not cloned yet` | Not a fault. A workdir is created by the first launch, not by setup. |
-# | `clone` names a different repo | That workdir was staged from an older `repo:`. The `fix:` says how. |
+# | `clone` says `not cloned yet` | Not a fault. A workdir is created by the first launch. |
 # | `worktree` MISSING | Something is uncommitted in the staged repo, and a launch will refuse it. |
+# | `hc` is green but a launch fails | Tell the manager what it said. `hc` proves the machines, not an agent's own code. |

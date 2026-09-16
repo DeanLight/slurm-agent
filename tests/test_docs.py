@@ -117,43 +117,75 @@ def test_the_manager_skill_takes_the_whole_job():
     assert "Never leave an allocation up" in skill
 
 
-def test_the_quick_start_only_talks_to_claude_after_setup():
-    """Past `hc`, every cell asks the manager. None of them does the work itself.
+def test_the_quick_start_shows_commands_rather_than_running_them_for_you():
+    """Setup is two commands; everything after is a `claude` you could have typed.
 
-    Driving allocations and launches from a notebook is a slower, more brittle copy of what
-    the manager does, and it made setup look as though it required a trial run to succeed.
+    A python helper wrapping the commands hides the one thing worth seeing, and it makes
+    the notebook prove something you cannot repeat in a terminal. So every runnable cell is
+    a bang magic, and there is no helper to run them through.
     """
     src = (ROOT / "docs" / "quickstart.py").read_text()
+    assert "def sh(" not in src and "subprocess" not in src, "no wrapper around the commands"
+    assert "poe ask" not in src and "slurm-agent ask" not in src
+
+    # Setup is init, then hc until green. Nothing else is run for you.
+    assert "# !uv run poe init" in src
+    assert "# !uv run poe hc --full --send" in src
     for command in ("poe job-up", "poe agent-run", "poe agent-batch", "poe agent-watch",
                     "poe job-down", "poe flush", "poe status", "poe agent-logs"):
-        assert f"sh('uv run {command}" not in src and f'sh("uv run {command}' not in src, \
-            f"the quick start still runs {command} itself"
-    assert "poe hc --full --send" in src, "it must still prove the machines"
-    assert "you only talk to Claude" in src
-    # The two sessions: open the tasks, then run them. The second must carry the ids from
-    # the first, which is the whole shape the human asked for.
-    assert src.count("claude -p") >= 3
-    assert "extract_ids(" in src and "{TASK_A} and {TASK_B}" in src
-    # And it must be the REAL command, not a wrapper: what the notebook runs has to be what
-    # you would type in a terminal, or the notebook proves something you cannot repeat.
-    assert "poe ask" not in src and "slurm-agent ask" not in src
+        assert f"# !uv run {command}" not in src, f"the quick start runs {command} itself"
+
+    # And the interface it teaches is a task id, not a pile of arguments.
+    assert "Pick up TASK-118 on Tillicum" in src
+    assert "A task id is enough" in src
+
+
+def _quickstart_sessions() -> list[str]:
+    """The prompt of every `claude -p` cell in the quick start."""
+    import re
+    import shlex
+
+    src = (ROOT / "docs" / "quickstart.py").read_text()
+    prompts = []
+    for line in src.splitlines():
+        if not line.startswith("# !claude "):
+            continue
+        words = shlex.split(line[len("# !"):])
+        assert words[:2] == ["claude", "-p"], words[:2]
+        assert len(words) == 3, f"the prompt split into pieces: {words}"
+        prompts.append(words[2])
+    return prompts
+
+
+def test_the_quick_starts_claude_commands_parse_as_shell_commands():
+    """The commands are the deliverable now, so they must be right, not just look right.
+
+    An apostrophe in a prompt — "what it's doing" — ends the single-quoted string and the
+    rest becomes shell syntax. That fails in a way that reads like Claude misbehaving
+    rather than like a quoting bug.
+    """
+    sessions = _quickstart_sessions()
+    assert len(sessions) == 3, f"expected three sessions, found {len(sessions)}"
+    # Open the tasks, run them, ask how they are going.
+    assert "Reply with the two task ids" in sessions[0]
+    assert "on Tillicum" in sessions[1]
+    assert all("TASK-118" in s for s in sessions[1:]), "the ids must carry between sessions"
 
 
 def test_the_manager_skill_grounds_work_in_notion():
     """A run with no task id is a run nobody can find afterwards.
 
     The chain has four links and the skill has to state all of them, because each one is
-    invisible from the next: the manager opens the task, the id crosses a shell boundary in
-    a variable, the launch puts it in the agent's brief, and the agent writes back to that
-    same row.
+    invisible from the next: the manager opens or reads the task, the id reaches the
+    launch, the agent opens that row, and the agent writes back to it.
     """
     skill = (ROOT / ".claude" / "skills" / "slurm-orchestration" / "SKILL.md").read_text()
     assert "config/tasks.yaml" in skill, "it must say where the Tasks database is named"
-    assert "open the rows yourself" in skill, "the human describes work; the manager files it"
+    assert "open the rows yourself" in " ".join(skill.split()), \
+        "the human may describe work with no row yet; the manager files it"
     assert 'poe agent-run "$TASK_A"' in skill, "the id must be shown reaching the launch"
     assert "Never launch without a task id" in skill
     assert "{{ task }}" in skill, "it must say which brief variable the id becomes"
-    # Asked for ids and nothing else, the caller is a script.
     assert "the ids, one per line, no sentence around them" in skill
 
 
@@ -205,28 +237,21 @@ def test_the_repo_config_holds_no_secrets_and_protects_the_one_file_that_does():
         "the manager has no reason to read secrets; poe puts them in the environment for it"
 
 
-def test_the_quick_starts_bash_actually_parses_as_a_shell_command():
-    """The commands are the deliverable now, so they must be right, not just look right.
+def test_the_manager_skill_knows_the_agent_is_somewhere_else():
+    """The manager is on a laptop; the agent is on a compute node. It must say so.
 
-    An apostrophe in a prompt — "what it's doing" — ends the single-quoted string and the
-    rest becomes shell syntax. That fails in a way that reads like Claude misbehaving
-    rather than like a quoting bug, so it is worth catching here.
+    An agent that thinks it is where the manager is opens files that are not there, runs
+    control-plane commands, and pushes from a machine nobody checked. The shipped briefs
+    state it — a brief the manager WRITES has to as well, and only the skill can tell it.
     """
-    import re
-    import shlex
+    skill = (ROOT / ".claude" / "skills" / "slurm-orchestration" / "SKILL.md").read_text()
+    assert "Tillicum compute node" in skill
+    assert "it must do the same" in skill, "a new brief has to carry the same context"
+    assert "SLURM_AGENT_RUN_DIR" in skill and "needs_human" in skill
 
-    src = (ROOT / "docs" / "quickstart.py").read_text()
-    sessions = []
-    for match in re.finditer(r'sh\(\s*f?"""(.*?)"""', src, re.S):
-        command = match.group(1)
-        if "claude" not in command:
-            continue
-        words = shlex.split(command.replace("{TASK_A}", "TASK-118")
-                                   .replace("{TASK_B}", "TASK-119"))
-        assert words[:2] == ["claude", "-p"], words[:2]
-        assert len(words) == 3, f"the prompt split into pieces: {words}"
-        sessions.append(words[2])
 
-    assert len(sessions) == 3, f"expected three sessions, found {len(sessions)}"
-    # The second must carry the ids the first produced.
-    assert "TASK-118" in sessions[1] and "TASK-119" in sessions[1]
+def test_the_manager_skill_expects_a_task_id_and_nothing_else():
+    """"Pick up TASK-118 on Tillicum" is the whole interface, so it must be enough."""
+    skill = (ROOT / ".claude" / "skills" / "slurm-orchestration" / "SKILL.md").read_text()
+    assert "A task id is the whole brief you get" in skill
+    assert "do not ask the human to repeat what Notion already says" in skill

@@ -106,15 +106,28 @@ the human can watch it:
 ssh -t tillicum-login tmux attach -t dev
 ```
 
-## 3. Make sure every piece of work has a Notion task
+## 3. Read the task. A task id is the whole brief you get.
 
 Work here is **grounded in Notion**. A run is worth something because it is about a task,
-and the task is what carries the record after the allocation is gone. So every launch needs
-a real task id.
+and the task is what carries the record after the allocation is gone.
 
-The human may hand you ids (`Run TASK-118 and TASK-119`) or may describe the work in a
-sentence. If they described it, **open the rows yourself** with your Notion MCP, in the
-database `config/tasks.yaml` names — read that file rather than assuming.
+**Expect to be given almost nothing.** "Pick up TASK-118 on Tillicum" is a complete
+instruction, and the usual one. Everything else — what the work is, which repo it lives in,
+which branch, what done looks like — is in that row and its spec. Read it, follow its
+links, and do not ask the human to repeat what Notion already says.
+
+What you are looking for, and where it usually is:
+
+| You need | Read it from |
+|---|---|
+| What the task asks for | the row's title and page body, and the spec it links to |
+| Which repo and branch | the row's `Repo` / `Branch` properties, or the spec |
+| Whether it holds a GPU | what the work actually is — training holds one, editing files does not |
+| What "done" means | the task, stated in its own words. If it does not say, ask — once |
+
+The human may instead describe the work in a sentence, with no row yet. Then **open the
+rows yourself** with your Notion MCP, in the database `config/tasks.yaml` names — read that
+file rather than assuming.
 
 Either way:
 
@@ -169,6 +182,28 @@ Copy `experiment-runner.yaml` and fill in, at minimum:
 
 Say what you wrote, and what it will cost, before you launch it. A config is the audit
 surface: it is how the human sees what an agent was allowed to do.
+
+### The agent is not where you are
+
+You are on the laptop. The agent runs on a **Tillicum compute node**, in a checkout it did
+not make, with a different filesystem, a different Claude credential and a different git
+credential. Everything it needs to know about that has to be in the config or the brief,
+because it cannot see your screen or this conversation.
+
+The shipped briefs already say it — `prompts/agent_launch.md.jinja` opens with "You are a
+Claude Code agent running on a Tillicum compute node", names the staged workdir, and points
+at `$SLURM_AGENT_RUN_DIR`. **If you write a new brief, it must do the same.** An agent that
+thinks it is on a laptop will try to open files that are not there, run `poe` commands that
+belong to the control plane, or push from a machine you never checked.
+
+Two specifics worth stating in any brief you write:
+
+- **Where its output goes.** A path relative to the workdir means "commit it into the repo";
+  `{RUN_DIR}/…` means "leave it beside the launch record", which is right for anything that
+  is evidence rather than a contribution.
+- **How to say it is stuck.** `python3 $SLURM_AGENT_RUN_DIR/remote_status.py needs_human
+  --waiting-on "…"` stops the meter. An agent that retries instead burns its budget on a
+  problem only the human can fix.
 
 ## 5. Launch, one command per task
 

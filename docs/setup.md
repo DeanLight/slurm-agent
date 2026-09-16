@@ -10,12 +10,13 @@ poe hooks          # git pre-commit hooks
 poe init           # create the footprint, then prove it works
 ```
 
-[`docs/quickstart.ipynb`](quickstart.py) is this page as a notebook you actually run. Use
-it on a new machine and read this page when a step needs explaining. It covers setup and
-stops there.
+[`docs/quickstart.ipynb`](quickstart.py) is this page as a notebook you actually run: two
+commands, then the `claude` commands to type. Use it on a new machine and read this page
+when a step needs explaining.
 
-The work itself you never drive by hand. Open Claude Code in this repo and say *"run these
-tasks on Tillicum, keep me posted on progress and spend"* —
+The work itself you never drive by hand, and a task id is the whole interface. Open Claude
+Code in this repo and say *"pick up TASK-118 on Tillicum, keep me posted on progress and
+spend"* —
 `.claude/skills/slurm-orchestration/SKILL.md` auto-loads and takes the whole job: opening
 the Notion tasks, sizing the compute, launching, supervising, reporting, and tearing down.
 

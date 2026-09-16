@@ -94,10 +94,11 @@ an agent. That rule is what makes a closed laptop lossless and two sessions agre
   it and creates nothing. `hc` is fast on purpose — run it after moving network or
   re-authing to Tillicum, where a dropped `ControlMaster` is the usual culprit.
 - `docs/quickstart.py` is **setup, and it stops there**: `init`, fill `.envrc`, `hc --full
-  --send`. It is the one notebook this repo commits with outputs, because those outputs are
-  the proof a clone works. It deliberately does not bring up an allocation or launch an
-  agent — driving the machinery from a notebook is a slower, more brittle copy of what the
-  manager does, and it made setup look as though it required a trial run to succeed.
+  --send`, then the `claude` commands to type. Every runnable cell is a bang magic, so the
+  notebook shows the real command rather than running it through a helper — a wrapper would
+  hide the only thing worth seeing and prove something you cannot repeat in a terminal. It
+  is the one notebook this repo commits with outputs, because those outputs are the proof a
+  clone works.
 - **The repo configures the manager, not a wrapper.** `claude` started in this root comes
   up as the manager because of four files Claude Code reads by itself: this one, the skill,
   `.mcp.json` (Notion and GitHub) and `.claude/settings.json` (those servers pre-enabled,
