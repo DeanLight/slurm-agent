@@ -162,12 +162,20 @@ print(pathlib.Path.cwd())
 # > Pick up TASK-118 on Tillicum. Keep me posted on progress and spend.
 # ```
 #
-# **That is the whole interface.** A task id is enough: the manager reads the row in Notion,
-# works out what the task asks for and which repo it is in, sizes the compute, writes the
-# agent config, launches onto Tillicum, supervises, and reports back. You never name an
-# allocation or a workdir.
+# **`poe manage` is the whole interface** — spinning work up, asking how it is going, and
+# reading what it cost are all the same command, because they are all the same conversation:
 #
-# `poe manage` is `claude` with the two things that cannot be checked in, and nothing else:
+# ```bash
+# poe manage "Pick up TASK-118 on Tillicum"                  # spin it up
+# poe manage "How are my runs going, and what have they cost?"  # ask, later
+# poe manage -p 'Reply with the ids and nothing else'         # print and exit, for a script
+# ```
+#
+# A task id is enough. The manager reads the row in Notion, works out what the task asks for
+# and which repo it is in, sizes the compute, writes the agent config, launches onto
+# Tillicum, supervises, and reports back. You never name an allocation or a workdir.
+#
+# It is `claude` with the three things that cannot be checked in, and nothing else:
 #
 # * **Remote Control, named.** The session also appears at claude.ai/code and in the Claude
 #   app, so a run you started at your desk is one you can read on the couch and steer from
@@ -177,17 +185,22 @@ print(pathlib.Path.cwd())
 # * **Your last conversation, resumed.** `--remote-control <name>` names the remote link,
 #   not the conversation, and resumes nothing — so the same name typed tomorrow would give
 #   you a second, empty session beside yesterday's. `poe manage` adds `--continue` when
-#   there is something here to continue, and starts fresh when there is not.
+#   there is something here to continue, and starts fresh when there is not. This is the
+#   part that makes the second line above work: it reaches the session that launched the
+#   runs, not a stranger who has to rediscover them.
+# * **Your opening message**, if you pass one — the same sentence you would otherwise type
+#   at the prompt. `-p` prints the reply and exits instead of opening the conversation, with
+#   every log line on stderr so stdout is the reply and nothing else.
 #
 # It configures nothing. Delete the task and a bare `claude` in this directory still comes
 # up as the manager, because the four files above are what make it one. That is the test of
-# whether a launcher belongs here at all: `poe manage` saves you two flags, it does not hold
-# the session together.
+# whether a launcher belongs here at all: `poe manage` saves you some flags and some typing,
+# it does not hold the session together.
 #
 # Three things it does not do:
 #
-# * **It is interactive-only.** A `claude -p` prints and exits, so the pasted blocks below
-#   stay invisible to the console. This is the reason to work as a conversation.
+# * **Remote Control is interactive-only.** `poe manage -p` prints and exits, so the pasted
+#   blocks below never reach your phone. This is the reason to work as a conversation.
 # * **It does not follow the agents.** They run headless on a compute node; ask the manager
 #   about them — it is the one supervising them, and it reads their notebooks in place.
 # * **The repo cannot turn it on behind your back.** Claude Code ignores
@@ -216,9 +229,14 @@ print(pathlib.Path.cwd())
 # %% [markdown]
 # ### The same thing from here, as bash you can paste
 #
-# `claude -p` is that manager, printing its reply and exiting. `--output-format` defaults to
-# `text`, so stdout is the reply — which is all `$( )` needs to feed one session into the
-# next.
+# `poe manage -p '…'` is the same manager and the same conversation, printing its reply and
+# exiting instead of opening. Every log line goes to stderr, so stdout is the reply and
+# nothing else — which is all `$( )` needs to feed one session into the next.
+#
+# It is the same entry point either way: `poe manage` to talk, `poe manage -p` to capture.
+# Both resume the conversation already in this directory, which is what makes the second
+# question below answerable — it reaches the session that launched the runs, rather than a
+# fresh one that has never heard of them.
 #
 # The cell below is one `%%bash` block: **copy it into a terminal and it runs unchanged.**
 # Nothing to fill in.
@@ -235,7 +253,7 @@ print(pathlib.Path.cwd())
 #
 # echo "opened: $IDS"
 #
-# claude -p "Pick up these tasks on Tillicum: $IDS
+# poe manage -p "Pick up these tasks on Tillicum: $IDS
 #
 # Read each one in Notion to see what it asks for. Size the compute yourself.
 # Tell me what each agent produced and what it cost."
@@ -252,7 +270,7 @@ print(pathlib.Path.cwd())
 # holds nothing it cannot rebuild.
 
 # %% language="bash"
-# claude -p 'How are my Tillicum runs going, and what have they cost so far?'
+# poe manage -p 'How are my Tillicum runs going, and what have they cost so far?'
 
 # %% [markdown]
 # For a long run you would rather watch than poll, drop the `-p` and talk to it — which is

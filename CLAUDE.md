@@ -2,18 +2,26 @@
 
 ## If you are reading this, you are the manager
 
-You were started in this repo, which means someone wants Tillicum work done. **Read
-`.claude/skills/slurm-orchestration/SKILL.md` before doing anything else** — it is the
-procedure for tasks, allocations, launches, supervision and teardown, and it is not
-optional. `poe --help` is the full inventory of what you can drive.
+You were started in this repo, which means someone wants Tillicum work done. **Who you are
+and how you work is not written here — it is in Notion.** Read these four, in order, before
+doing anything else:
 
-The human names the work. You do the rest: open the Notion task, size the compute, write
-the agent config, launch, supervise, report progress and spend, tear down. If you find
-yourself telling them which `poe` command to run, you have handed back the job.
+| Read | Through | What it gives you |
+|---|---|---|
+| **Dev Workspace** | Notion MCP | Who you are this session, and what is going on |
+| **Slurm Manager — Tillicum Orchestration** | Notion MCP, under *Agent Skills* | Your role: the flow, the reporting style, the anti-patterns |
+| **Code Guide** | Notion MCP | How we write code — jupytext `py:percent`, `if test():` beside each function, `display(...)` over a printed ✓ |
+| `.claude/skills/slurm-orchestration/SKILL.md` | this checkout | The mechanical procedure: commands, flags, refusals |
 
-When you are asked for ids and nothing else, give exactly that — one per line, no sentence
-around them. The caller is a shell capturing your reply into a variable, and prose becomes
-part of the id.
+The split is deliberate. **The Notion skill is the role, and the repo skill is the
+procedure** — the procedure moves with the code, so it lives beside the code and changes in
+the same commit; the role does not, so it lives where every repo can read it and is written
+once. Neither restates the other, and this file restates neither: what follows is the
+repo's own reasoning, why the code here is shaped as it is.
+
+If the Notion MCP cannot be reached, say so rather than proceeding on half a brief — but
+`.claude/skills/slurm-orchestration/SKILL.md` still carries the procedure, so the work is
+not blocked, only its grounding. That failure is real and has happened on the cluster.
 
 ---
 
@@ -21,9 +29,6 @@ A local Claude Code session brings up Tillicum allocations, stages repos, and la
 supervises Claude agents on the compute node. Tillicum sits behind UW 2FA on a network only
 the researcher's laptop is on, so **this repo only works from that laptop** — no sandbox,
 cloud session or CI runner can reach the cluster.
-
-Full project context lives in Notion; read the **Dev Workspace** page through the Notion MCP
-before starting, as every other repo here does.
 
 ## The one rule that shapes everything
 
@@ -114,10 +119,10 @@ an agent. That rule is what makes a closed laptop lossless and two sessions agre
   re-authing to Tillicum, where a dropped `ControlMaster` is the usual culprit.
 - `docs/quickstart.py` is **setup, and it stops there**: `init`, fill `.envrc`, `hc
   --full`, then `poe manage` — the entry point it displays for taking control of runs — and
-  the `claude -p` block to paste. Every runnable cell is a bang magic, so the notebook shows
-  the real command rather than running it through a helper — a wrapper would hide the only
-  thing worth seeing and prove something you cannot repeat in a terminal. `poe manage` is
-  shown with the two flags it passes spelled out beside it, for the same reason: a launcher
+  the `poe manage -p` block to paste. Every runnable cell is a bang magic, so the notebook
+  shows the real command rather than running it through a helper — a wrapper would hide the
+  only thing worth seeing and prove something you cannot repeat in a terminal. `poe manage`
+  is shown with the flags it passes spelled out beside it, for the same reason: a launcher
   may save you typing, never understanding. It is the one notebook this repo commits with
   outputs, because those outputs are the proof a clone works.
 - **The repo configures the manager, not a wrapper.** `claude` started in this root comes
@@ -126,11 +131,14 @@ an agent. That rule is what makes a closed laptop lossless and two sessions agre
   `poe` pre-approved, `.envrc` denied). Anything a manager session needs goes in those, so
   that what a human types and what a script runs are the same command. A wrapper that
   configured the session would work while a bare `claude` quietly did not.
-  `poe claude-manage` is the one launcher, and it is not that: it adds only what cannot be
-  checked in — the Remote Control name, and `--continue`, because `--remote-control <name>`
-  names the remote link and resumes nothing, so the same name typed twice is two empty
-  conversations. Delete it and the manager still comes up correctly; that is the test of
-  whether a launcher is allowed to exist here.
+  `poe manage` (`poe claude-manage`) is the one launcher, and it is not that: it adds only
+  what a command line can carry and a checked-in file cannot — the Remote Control name,
+  `--continue`, and the opening message. `--remote-control <name>` names the remote link and
+  resumes nothing, so the same name typed twice is two empty conversations; `--continue` is
+  what makes "how are my runs going?" reach the session that launched them. `-p` is the same
+  manager printing and exiting, which is why `IDS=$(poe manage -p "…")` works: poe's own
+  banner goes to stderr, so stdout stays exactly the reply. Delete the task and the manager
+  still comes up correctly; that is the test of whether a launcher is allowed to exist here.
 - **A reply is stdout and nothing else.** `IDS=$(claude -p "…")` is the contract that lets
   one session feed the next — `--output-format` defaults to `text` under `-p` — so logs go
   to stderr repo-wide. A log line captured into that variable does not fail; it asks the

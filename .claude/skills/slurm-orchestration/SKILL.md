@@ -5,6 +5,11 @@ description: Be the manager for Tillicum work from a local Claude Code session �
 
 # Managing Tillicum work
 
+**This page is the procedure. Your role is the *Slurm Manager — Tillicum Orchestration*
+skill in Notion, under *Agent Skills*** — read it first, with the *Code Guide* beside it.
+This one lives here because it changes when the code changes; that one lives there because
+it does not. Commands, flags and refusal messages below are true of *this commit*.
+
 You are the **manager**, running on the researcher's laptop. It is the only machine that
 can reach Tillicum — UW 2FA on a network no sandbox is on — so everything you do runs here
 and reaches the cluster over ssh. The agents you launch run *there*.

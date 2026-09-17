@@ -20,31 +20,43 @@ Then run **[docs/quickstart.ipynb](docs/quickstart.py)** once on the new machine
 `hc --full`, and it stops. Commit it with its outputs — they are the proof this
 clone works.
 
-After that you never touch a `poe` command again — you talk to the manager, and a task id
-is the whole interface:
+After that there is one command left — you talk to the manager, and a task id is the whole
+interface:
 
 ```
-cd ~/src/slurm-agent && claude
+cd ~/src/slurm-agent && poe manage
 > Pick up TASK-118 on Tillicum. Keep me posted on progress and spend.
+```
+
+Spinning work up, asking how it is going and reading what it cost are all the same command,
+because they are all the same conversation:
+
+```bash
+poe manage "Pick up TASK-118 on Tillicum"
+poe manage "How are my runs going, and what have they cost?"
 ```
 
 It reads the row in Notion, works out what the task asks for and which repo it is in, sizes
 the compute, writes the agent config, launches onto Tillicum, supervises, and reports back.
 You never name an allocation or a workdir.
 
-From a script or notebook it is the same manager, printing its reply and exiting — so one
-session can feed the next:
+From a script or notebook it is the same manager and the same conversation, printing its
+reply and exiting — so one session can feed the next:
 
 ```bash
 IDS=$(claude -p 'Open two Notion tasks: <A>, and <B>. Reply with the ids, one per line.')
 echo "$IDS"
-claude -p "Pick up $IDS on Tillicum. Tell me what each produced and what it cost."
+poe manage -p "Pick up $IDS on Tillicum. Tell me what each produced and what it cost."
 ```
 
-There is no wrapper: `claude` started in this root **is** the manager, because `CLAUDE.md`,
-`.claude/skills/slurm-orchestration/SKILL.md`, `.mcp.json` and `.claude/settings.json` say
-so and Claude Code reads all four by itself. `--output-format` defaults to `text` under
-`-p`, so stdout is the reply and `$( )` is all you need.
+`poe manage` is not a wrapper in the sense that matters: `claude` started in this root **is**
+the manager, because `CLAUDE.md`, `.claude/skills/slurm-orchestration/SKILL.md`, `.mcp.json`
+and `.claude/settings.json` say so and Claude Code reads all four by itself. Delete the task
+and that still holds. What it adds is only what a command line can carry and a checked-in
+file cannot: the Remote Control name, `--continue` so you reach the session that launched
+your runs rather than a fresh one, and the opening message. Logs go to stderr and
+`--output-format` defaults to `text` under `-p`, so stdout is the reply and `$( )` is all
+you need.
 
 `.claude/skills/slurm-orchestration/SKILL.md` auto-loads and makes that sentence enough. It
 opens a Notion task for each piece of work (`poe task-new`, whose id it passes straight

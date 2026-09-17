@@ -185,12 +185,18 @@ def test_the_quick_starts_bash_runs_as_pasted():
 
     opener, update = blocks
     # The ids go into a variable and straight into the next session — nothing to fill in.
+    # The first call is a bare `claude -p` on purpose: inventing two rows is scaffolding for
+    # the walkthrough, standing in for the spec or sync-up that filed them in real use. The
+    # reader deletes it. Everything that is actually managing work goes through `poe manage`.
     assert "IDS=$(claude -p" in opener
     assert 'echo "opened: $IDS"' in opener
+    assert "poe manage -p" in opener, "spinning work up is the manager's entry point"
     assert "Pick up these tasks on Tillicum: $IDS" in opener
     assert "TASK-1" not in opener, "a placeholder id means the reader has to edit it"
-    # The update needs no ids: the manager re-derives everything from the cluster.
-    assert "claude -p" in update and "IDS" not in update
+    # The update needs no ids: the manager re-derives everything from the cluster. It is the
+    # same entry point and the same conversation as the launch — which is why it can answer
+    # at all, rather than meeting a fresh session that never heard of those runs.
+    assert "poe manage -p" in update and "IDS" not in update
 
 
 def test_the_manager_skill_grounds_work_in_notion():

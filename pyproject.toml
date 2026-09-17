@@ -57,38 +57,9 @@ docs-build   = {cmd = "mkdocs build", help = "Build docs site"}
 docs-deploy  = {cmd = "mkdocs gh-deploy --force", help = "Deploy docs to GitHub Pages"}
 
 # ── the manager session ─────────────────────────────────────────────────────────
-# Starts the manager with Remote Control on and the previous conversation resumed.
-#
-# This task configures NOTHING. `CLAUDE.md`, the skill, `.mcp.json` and
-# `.claude/settings.json` are what make a session in this directory the manager, and a bare
-# `claude` here is still exactly that — which is the property that stopped the last wrapper
-# from being worth keeping. What this adds is the two things that live on the command line
-# and cannot be checked in: the Remote Control name, and resume.
-#
-# Resume is not implied by `--remote-control`. That flag starts an interactive session with
-# Remote Control enabled and optionally names the remote link; the name is not a
-# conversation identity, so typing the same one tomorrow gives you a second, empty
-# conversation next to yesterday's. `--continue` is what resumes, and it fails outright when
-# there is nothing to continue — hence the check rather than the flag on its own.
-#
-# The transcript directory is Claude Code's, addressed by its own slugged-path convention.
-# If that guess ever misses, the fallback is a fresh session: a lost resume, never a failed
-# launch.
-claude-manage = {shell = """
-name="${SLURM_AGENT_MANAGER_SESSION:-Tillicum manager}"
-transcripts="$HOME/.claude/projects/$(pwd | sed 's|/|-|g')"
-if [ -n "${SLURM_AGENT_MANAGER_FRESH:-}" ]; then
-  echo "starting a fresh manager conversation (SLURM_AGENT_MANAGER_FRESH set)" >&2
-  exec claude --remote-control "$name"
-elif ls "$transcripts"/*.jsonl >/dev/null 2>&1; then
-  echo "resuming the most recent manager conversation in this directory" >&2
-  exec claude --continue --remote-control "$name"
-else
-  echo "no previous conversation here — starting a fresh one" >&2
-  exec claude --remote-control "$name"
-fi
-""", help = "Start (or resume) the manager session, with Remote Control on"}
-manage       = {ref = "claude-manage", help = "Alias for claude-manage"}
+# `claude-manage` and its `manage` alias are defined at the END of this section, because
+# declaring their arguments needs TOML table syntax and a table header here would swallow
+# every inline task below it.
 
 # ── setup ───────────────────────────────────────────────────────────────────────
 init         = {cmd = "slurm-agent init", help = "Create the local footprint, then run a full healthcheck"}
@@ -121,6 +92,74 @@ monitor-install   = {cmd = "slurm-agent monitor-install", help = "Install the di
 monitor-uninstall = {cmd = "slurm-agent monitor-uninstall", help = "Remove the digest schedule"}
 monitor-status    = {cmd = "slurm-agent monitor-status", help = "Is the schedule on, and when does it fire"}
 session-new       = {cmd = "slurm-agent session-new", help = "Scaffold a session artifact notebook"}
+
+# ── the manager session ─────────────────────────────────────────────────────────
+# `poe manage "Pick up T2-132 on Tillicum"` is the entry point for everything the manager
+# does: spinning work up, asking how it is going, reporting what it cost. One command, so
+# there is one thing to learn and one conversation to come back to.
+#
+# It configures NOTHING. `CLAUDE.md`, the skill, `.mcp.json` and `.claude/settings.json` are
+# what make a session in this directory the manager, and a bare `claude` here is still
+# exactly that — the property that stopped the last wrapper from being worth keeping. What
+# this adds is only what lives on a command line and cannot be checked in: the Remote
+# Control name, resume, and the prompt you would otherwise type as your first message.
+#
+# Resume is not implied by `--remote-control`. That flag starts an interactive session with
+# Remote Control enabled and optionally names the remote link; the name is not a
+# conversation identity, so typing the same one tomorrow gives you a second, empty
+# conversation next to yesterday's. `--continue` is what resumes, and it fails outright when
+# there is nothing to continue — hence the check rather than the flag on its own. Resuming is
+# what makes "how are my runs going?" answerable: it reaches the session that launched them.
+#
+# `-p` is the same manager printing its reply and exiting, for a shell that captures it —
+# `IDS=$(poe manage -p '…')`. Remote Control is interactive-only, so `-p` does not ask for
+# it, and every log line here goes to stderr so that stdout stays exactly the reply.
+#
+# The transcript directory is Claude Code's, addressed by its own slugged-path convention.
+# If that guess ever misses, the fallback is a fresh session: a lost resume, never a failed
+# launch.
+[tool.poe.tasks.claude-manage]
+help = "Talk to the manager: spin work up, ask how it is going, report what it cost"
+shell = """
+name="${SLURM_AGENT_MANAGER_SESSION:-Tillicum manager}"
+transcripts="$HOME/.claude/projects/$(pwd | sed 's|/|-|g')"
+
+resume=""
+if [ -n "${SLURM_AGENT_MANAGER_FRESH:-}" ]; then
+  echo "starting a fresh manager conversation (SLURM_AGENT_MANAGER_FRESH set)" >&2
+elif ls "$transcripts"/*.jsonl >/dev/null 2>&1; then
+  echo "resuming the most recent manager conversation in this directory" >&2
+  resume="--continue"
+else
+  echo "no previous conversation here — starting a fresh one" >&2
+fi
+
+if [ -n "$print" ]; then
+  # Headless. stdout is the reply and nothing else, which is what `$( )` needs.
+  if [ -n "$prompt" ]; then exec claude -p $resume "$prompt"; fi
+  exec claude -p $resume
+fi
+
+if [ -n "$prompt" ]; then exec claude $resume --remote-control "$name" "$prompt"; fi
+exec claude $resume --remote-control "$name"
+"""
+
+[[tool.poe.tasks.claude-manage.args]]
+name = "prompt"
+positional = true
+required = false
+default = ""
+help = "What to ask the manager. Omitted, you get the conversation and type it yourself."
+
+[[tool.poe.tasks.claude-manage.args]]
+name = "print"
+type = "boolean"
+options = ["-p", "--print"]
+help = "Print the reply and exit, instead of opening the conversation"
+
+[tool.poe.tasks.manage]
+ref = "claude-manage"
+help = "Alias for claude-manage"
 
 
 [tool.juplit]
