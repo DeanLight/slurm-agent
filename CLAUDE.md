@@ -139,6 +139,16 @@ an agent. That rule is what makes a closed laptop lossless and two sessions agre
   manager printing and exiting, which is why `IDS=$(poe manage -p "…")` works: poe's own
   banner goes to stderr, so stdout stays exactly the reply. Delete the task and the manager
   still comes up correctly; that is the test of whether a launcher is allowed to exist here.
+- **A `poe` task that opens an interactive program is a `cmd` task, never a `shell` one.**
+  Poe runs a shell task by feeding the script body to the interpreter on **stdin**
+  (`executor.execute(..., input=content.encode())`), so the child's stdin is a pipe. An
+  `exec claude` inside one inherits that pipe, finds no terminal to read from, and gives
+  you something that is not a conversation — with no error to explain it. `manage` was
+  written that way first. A `cmd` task inherits the real terminal on both ends, which is
+  why `poe manage` wraps `slurm-agent manage`, which builds an argv and `execvp`s it: the
+  same one-task-one-command shape as everything else, and the flag order becomes a tested
+  function instead of quoting inside a heredoc. `manage.EXEC` is that call, named so the
+  smoke suite can stand in front of it — an unpatched `execvp` replaces pytest.
 - **A reply is stdout and nothing else.** `IDS=$(claude -p "…")` is the contract that lets
   one session feed the next — `--output-format` defaults to `text` under `-p` — so logs go
   to stderr repo-wide. A log line captured into that variable does not fail; it asks the

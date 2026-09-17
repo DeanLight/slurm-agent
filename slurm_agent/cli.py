@@ -8,6 +8,7 @@ the same surface a human does.
 """
 
 import os
+from typing import Annotated
 
 import cyclopts
 
@@ -76,6 +77,16 @@ def _views():
     cluster, run = _cluster(), _runner()
     snapshot = probe(run, cluster.run_root)
     return snapshot, supervisor.views(snapshot, cluster), cluster, run
+
+
+# ── the manager session ──────────────────────────────────────────────────────────
+@app.command
+def manage(prompt: str = "",
+           print_: Annotated[bool, cyclopts.Parameter(name=["-p", "--print"])] = False) -> None:
+    """Talk to the manager: spin work up, ask how it is going, report what it cost."""
+    from slurm_agent import manage as manager
+
+    manager.manage(prompt, headless=print_)
 
 
 # ── setup ────────────────────────────────────────────────────────────────────────

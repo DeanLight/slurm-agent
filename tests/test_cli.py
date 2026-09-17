@@ -16,18 +16,20 @@ TEMPLATE_TASKS = {
     "hooks", "sync", "nb", "clean", "test", "check", "html", "skill",
     "docs", "docs-build", "docs-deploy", "hc",
 }
-# Tasks that start the MANAGER rather than drive the cluster. They cannot be cyclopts
-# commands: each one `exec`s an interactive `claude`, and a package that shells out to a
-# TUI is precisely what the smoke suite's failing runner factories exist to prevent — a
-# `slurm-agent claude-manage` would replace the test process mid-run. They also configure
-# nothing, so `poe --help` is still the honest inventory: what they add is the Remote
-# Control name and `--continue`, which live on a command line and cannot be checked in.
-LAUNCHER_TASKS = {"claude-manage", "manage"}
+# A poe task that opens an interactive program has to be a `cmd` task. Poe runs a SHELL
+# task by feeding the script body to the interpreter on stdin, so the child's stdin is a
+# pipe: `exec claude` inherits it, finds no terminal to read from, and silently gives you
+# something that is not a conversation. `manage` was written as a shell task first, and
+# this is what it cost.
+INTERACTIVE_TASKS = {"manage", "job-shell"}
+
+
+def _poe_config() -> dict:
+    return tomllib.loads((ROOT / "pyproject.toml").read_text())["tool"]["poe"]["tasks"]
 
 
 def _poe_tasks() -> set[str]:
-    config = tomllib.loads((ROOT / "pyproject.toml").read_text())
-    return set(config["tool"]["poe"]["tasks"])
+    return set(_poe_config())
 
 
 def _cli_commands() -> set[str]:
@@ -42,5 +44,18 @@ def test_every_cli_command_has_a_poe_task():
 
 
 def test_every_poe_task_is_a_cli_command_or_template_plumbing():
-    extra = _poe_tasks() - _cli_commands() - TEMPLATE_TASKS - LAUNCHER_TASKS
+    extra = _poe_tasks() - _cli_commands() - TEMPLATE_TASKS
     assert not extra, f"poe tasks with no CLI command: {sorted(extra)}"
+
+
+def test_a_task_that_opens_a_terminal_program_is_a_cmd_task():
+    """Not a `shell` task, whose child gets a pipe on stdin and cannot be interactive."""
+    tasks = _poe_config()
+    for name in INTERACTIVE_TASKS:
+        task = tasks[name]
+        while isinstance(task, dict) and "ref" in task:
+            task = tasks[task["ref"].split()[0]]
+        assert isinstance(task, dict) and "cmd" in task, (
+            f"`poe {name}` opens an interactive program, so it must be a cmd task — "
+            "a poe shell task hands its child a pipe on stdin and the session dies silently"
+        )

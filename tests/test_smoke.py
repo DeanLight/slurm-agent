@@ -32,6 +32,8 @@ COMMANDS: list[list[str]] = [
     ["healthcheck"],
     ["healthcheck", "--full"],
     ["spend"],
+    ["manage"],
+    ["manage", "-p", "how are my runs going?"],
     ["job-up", "dev"],
     ["job-status"],
     ["job-down", "dev"],
@@ -81,6 +83,11 @@ def cluster(monkeypatch, tmp_path):
 
     monkeypatch.setattr("slurm_agent.remote.ssh_runner", _escaped)
     monkeypatch.setattr("slurm_agent.remote.local_runner", _escaped)
+    # `manage` ends in `execvp`, which does not fail — it REPLACES this process. Without
+    # this the smoke run would become a Claude session and pytest would never return.
+    execs: list[list[str]] = []
+    monkeypatch.setattr("slurm_agent.manage.EXEC", lambda f, argv: execs.append(argv))
+    fake.execs = execs
 
     # A filled .envrc, so `hc` answers about keys rather than about a missing file.
     envrc = tmp_path / ".envrc"
@@ -207,3 +214,28 @@ def test_the_runner_is_the_only_way_out_of_this_process():
         if "subprocess" in text and "import subprocess" in text:
             offenders.append(path.name)
     assert not offenders, f"these bypass the Runner seam: {offenders}"
+
+
+def test_manage_opens_a_conversation_and_p_prints_one(cluster):
+    """`poe manage` must reach a real `claude`, with the flags that make it the manager.
+
+    The bug this exists for was invisible: `manage` was a poe SHELL task, whose child gets
+    a pipe on stdin, so `claude` came up with nothing to read from instead of a session.
+    Going through the CLI proves the argv; `test_cli.py` proves the task type.
+    """
+    for argv in (["manage"], ["manage", "-p", "how are my runs going?"]):
+        try:
+            cli.app(argv)
+        except SystemExit:
+            pass
+
+    opened, printed = cluster.execs
+    assert opened[0] == "claude"
+    # Interactive: Remote Control, always with its name, so a prompt can never be
+    # swallowed as the session title.
+    assert opened[opened.index("--remote-control") + 1] == "Tillicum manager"
+
+    # Headless is the same manager printing its reply: no Remote Control, which is
+    # interactive-only, and the prompt is ONE argv element with no shell in between.
+    assert "-p" in printed and "--remote-control" not in printed
+    assert printed[-1] == "how are my runs going?"
