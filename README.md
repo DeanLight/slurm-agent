@@ -87,6 +87,12 @@ loop you can stop and restart at will.
 
 `poe --help` is the full inventory.
 
+`poe status` names every run — running, queued, completed, failed — with what each one cost
+in GPU time. It reads `squeue`, `sacct` and the run roots each time you ask, so there is
+nothing local to go stale, and `poe flush` prunes run roots rather than a list. What the
+agents spent in tokens is a separate bill, reported by `poe monitor-*`; the two figures are
+never added together.
+
 ## How a run is supervised
 
 `config/supervision.yaml` says what "stuck" means, so a kill is a rule firing rather than a

@@ -54,7 +54,25 @@ class RemoteError(RuntimeError):
 
 # %%
 def ssh_runner(host: str, *, timeout: int = 60) -> Runner:
-    """Build a `Runner` that executes commands on `host` over the shared ssh connection."""
+    """Build a `Runner` that executes commands on `host` over the shared ssh connection.
+
+    `host` is an alias from this laptop's `~/.ssh/config`; the callable it returns takes one
+    shell command and gives back that command's stdout:
+
+        run = ssh_runner("tillicum-login")
+        run("squeue --me --noheader")
+        #   '4812345 gpu-a100 agent deanlcs R 12:04 1 g004\n'
+        run('cat "$HOME"/.slurm-agent/runs/7930f358/status.json')
+
+    The `"$HOME"` in that last line is not a style choice: the command is shell-quoted
+    before it crosses the ssh boundary, so a `~` would reach the remote shell literally and
+    never expand. Pass paths that come from a config through `remote_path` below rather than
+    writing the expansion by hand.
+
+    A second argument is fed to the command on stdin — that is how `probe` pipes a script to
+    `sh -s` without installing anything on the cluster. A non-zero exit raises `RemoteError`
+    carrying the remote stderr, because that text is the only explanation the user gets.
+    """
 
     def run(command: str, stdin: str | None = None) -> str:
         argv = ["ssh", host, command]
