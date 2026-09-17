@@ -120,7 +120,10 @@ print(pathlib.Path.cwd())
 # expires on its own schedule. Being logged in to Claude does not make Notion answer.
 #
 # There is a row per server per machine — `mcp notion` and `mcp github` here, and the same
-# two on the login node for the agents, which authorise separately again. Each one runs a
+# two on the login node for the agents, which authorise separately again. **Plain `poe hc`
+# lists them as `SKIPPED`**, because proving one costs a cent; `--full` turns each into a
+# real verdict. A `SKIPPED` row is never a pass, and that is the point: the fast tier still
+# names the thing it has not proved. Each full-tier row runs a
 # real headless `claude -p` that calls one read-only tool, because that is the only thing
 # that proves a grant is live: `claude mcp list` reports a stored approval record, not what
 # a session actually does. `mcp notion` also proves `data_source` in `config/tasks.yaml`
@@ -267,7 +270,7 @@ print(pathlib.Path.cwd())
 # | It can **push**, not just read | `github … push`, from `hc --full`'s `--dry-run` probe |
 # | Claude is logged in on **both** machines | `claude auth`, under each heading — free, so it is in the fast tier |
 # | Claude works headlessly there, and costs something | `agent credential`, under each heading — `hc --full` asserts `total_cost_usd > 0` |
-# | Every MCP server is authorised, on **both** machines | one `mcp …` row per server per heading, each proved by a real tool call |
+# | Every MCP server is authorised, on **both** machines | one `mcp …` row per server per heading — named in every tier, proved by a real tool call under `--full` |
 # | The manager can reach the Notion Tasks database | `mcp notion` — which is how a run gets a task id |
 # | An allocation outlives the ssh that asked for it | `allocation probe`, in the mode you configured |
 # | This clone knows which repos it manages | one `staged repo ·` heading per `agents/<kind>.yaml` |
@@ -295,6 +298,8 @@ print(pathlib.Path.cwd())
 # | `my keys` MISSING | Fill them in *this laptop's* `.envrc`. It only asks for what `config/manager.yaml` declares. |
 # | `claude auth` MISSING | Run `claude auth login` on that machine. |
 # | `agent credential` MISSING | Logged in, but the headless call failed or reported no cost. Run `claude` there once. |
+# | `mcp …` SKIPPED | You ran plain `poe hc`. The fast tier names the servers; `--full` proves them. |
+# | `mcp servers` MISSING | `.mcp.json` or `config/mcp.json` is gone or empty. Restore it from the repo. |
 # | `mcp github` MISSING | Run `claude` on that machine and authorise the GitHub MCP server. |
 # | `mcp notion` MISSING | Same, for Notion — or `data_source` in `config/tasks.yaml` names nothing real. |
 # | `github …` MISSING | That machine has no git credential for the repo. `gh auth login` there, or a PAT. |
