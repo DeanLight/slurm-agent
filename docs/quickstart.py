@@ -22,7 +22,7 @@
 #
 # 1. `poe init` — create the local footprint and report on everything
 # 2. `poe hc --full` — until it is green
-# 3. talk to Claude
+# 3. `poe manage` — and from there you are talking to the manager, not typing commands
 #
 # Step 3 is the whole point. You do not bring up allocations, launch agents or poll them;
 # the manager does, and it reports progress and spend back to you. **This notebook does not
@@ -166,10 +166,15 @@ print(pathlib.Path.cwd())
 # reading what it cost are all the same command, because they are all the same conversation:
 #
 # ```bash
-# poe manage "Pick up TASK-118 on Tillicum"                  # spin it up
-# poe manage "How are my runs going, and what have they cost?"  # ask, later
-# poe manage -p 'Reply with the ids and nothing else'         # print and exit, for a script
+# poe manage                                                    # open it and type
+# poe manage "Pick up TASK-118 on Tillicum"                     # same, first message given
+# poe manage "How are my runs going, and what have they cost?"  # same conversation, later
 # ```
+#
+# All three open the conversation and leave you in it, which is the normal way to work. The
+# one exception is `-p`, and it is for scripts rather than for you: `poe manage -p '…'`
+# prints the reply and exits, so `IDS=$(poe manage -p '…')` can capture it. Remote Control
+# is interactive-only, so `-p` is also the one form that never reaches your phone.
 #
 # A task id is enough. The manager reads the row in Notion, works out what the task asks for
 # and which repo it is in, sizes the compute, writes the agent config, launches onto
@@ -189,8 +194,9 @@ print(pathlib.Path.cwd())
 #   part that makes the second line above work: it reaches the session that launched the
 #   runs, not a stranger who has to rediscover them.
 # * **Your opening message**, if you pass one — the same sentence you would otherwise type
-#   at the prompt. `-p` prints the reply and exits instead of opening the conversation, with
-#   every log line on stderr so stdout is the reply and nothing else.
+#   at the prompt, and the conversation is yours from there. Only `-p` changes that: it
+#   prints the reply and exits, with every log line on stderr so stdout is the reply and
+#   nothing else.
 #
 # It configures nothing. Delete the task and a bare `claude` in this directory still comes
 # up as the manager, because the four files above are what make it one. That is the test of
@@ -199,8 +205,9 @@ print(pathlib.Path.cwd())
 #
 # Three things it does not do:
 #
-# * **Remote Control is interactive-only.** `poe manage -p` prints and exits, so the pasted
-#   blocks below never reach your phone. This is the reason to work as a conversation.
+# * **Remote Control is interactive-only.** `poe manage -p` prints and exits, so the one
+#   pasted block below never reaches your phone. This is the reason to work as a
+#   conversation and to keep `-p` for scripts.
 # * **It does not follow the agents.** They run headless on a compute node; ask the manager
 #   about them — it is the one supervising them, and it reads their notebooks in place.
 # * **The repo cannot turn it on behind your back.** Claude Code ignores
@@ -227,63 +234,73 @@ print(pathlib.Path.cwd())
 # Ask "what has this cost so far" and the manager answers from both.
 
 # %% [markdown]
-# ### The same thing from here, as bash you can paste
+# ### Try it: two tasks, opened and handed over
 #
-# `poe manage -p '…'` is the same manager and the same conversation, printing its reply and
-# exiting instead of opening. Every log line goes to stderr, so stdout is the reply and
-# nothing else — which is all `$( )` needs to feed one session into the next.
+# The block below opens two small tasks, only so this walkthrough has something to point at
+# — in real use the rows already exist, because you wrote a spec or a sync-up filed them,
+# and you skip straight to the handover.
 #
-# It is the same entry point either way: `poe manage` to talk, `poe manage -p` to capture.
-# Both resume the conversation already in this directory, which is what makes the second
-# question below answerable — it reaches the session that launched the runs, rather than a
-# fresh one that has never heard of them.
+# **Copy it into a terminal in this directory and it runs unchanged.** Nothing to fill in.
+# `-p` is used here for one reason: it prints the reply and exits, so `$( )` can capture the
+# ids. Every log line goes to stderr, which is what keeps stdout exactly the reply.
 #
-# The cell below is one `%%bash` block: **copy it into a terminal and it runs unchanged.**
-# Nothing to fill in.
-#
-# Its first half opens two tasks, only so this walkthrough has something to point at — in
-# real use the rows already exist (you wrote a spec, or a sync-up filed them) and you delete
-# that half and put your own ids in `IDS`.
+# It ends by printing the next command with your real ids already in it. That one you paste
+# **without `-p`** — which is the form that matters, because it opens the conversation and
+# leaves you in it.
 
 # %% language="bash"
-# IDS=$(claude -p 'Open two small tasks in our Notion Tasks database, for work in this repo:
+# IDS=$(poe manage -p 'Open two small tasks in our Notion Tasks database, for work in this repo:
 # (1) add a docstring example to slurm_agent/remote.py
 # (2) add a line to README.md describing poe status
 # Reply with the two task ids, one per line, and nothing else.')
 #
 # echo "opened: $IDS"
 #
-# poe manage -p "Pick up these tasks on Tillicum: $IDS
+# echo
+# echo "Now paste this, and you are talking to the manager:"
+# echo
+# cat <<END
+# poe manage "Pick up these tasks on Tillicum: $(echo $IDS)
 #
 # Read each one in Notion to see what it asks for. Size the compute yourself.
-# Tell me what each agent produced and what it cost."
+# Keep me posted on progress and spend."
+# END
 
 # %% [markdown]
-# From those two sentences the manager will: run `poe hc --full`, decide the compute (two
-# small tasks belong as two steps on **one** allocation — Tillicum permits one interactive
-# allocation, so a second job is not a tidier answer, it is an unavailable one), write an
-# agent config for each, launch them onto the cluster, watch them, and drop the allocation
-# when the last one is done.
+# ### You are in the conversation now — ask it things
 #
-# Ask for an update whenever you want one. This needs no ids: the manager re-derives
-# everything from `squeue`, `sacct` and the run roots on the cluster, because the laptop
-# holds nothing it cannot rebuild.
-
-# %% language="bash"
-# poe manage -p 'How are my Tillicum runs going, and what have they cost so far?'
-
-# %% [markdown]
-# For a long run you would rather watch than poll, drop the `-p` and talk to it — which is
-# also the only form that reaches your phone:
+# `poe manage` with no `-p` opens the session and stays there. That sentence was only its
+# **first message**; the prompt is yours from then on, and this is where the work actually
+# happens. Ask, in your own words:
+#
+# > How are my runs going, and what have they cost so far?
+#
+# > TRIAL-B has been on round 2 for a while — is it stuck?
+#
+# > Drop the allocation when the last one finishes.
+#
+# None of those need ids or flags. The manager re-derives everything from `squeue`, `sacct`
+# and the run roots on the cluster, because the laptop holds nothing it cannot rebuild.
+#
+# From that first sentence it will: run `poe hc --full`, decide the compute (two small tasks
+# belong as two steps on **one** allocation — Tillicum permits one interactive allocation,
+# so a second job is not a tidier answer, it is an unavailable one), write an agent config
+# for each, launch them onto the cluster, watch them, and drop the allocation when the last
+# one is done.
+#
+# Being interactive is also what puts it on your phone: Remote Control is interactive-only,
+# so `poe manage -p` never reaches claude.ai and `poe manage` always does.
+#
+# **Closed the terminal? Open it the same way.**
 #
 # ```bash
-# cd ~/src/slurm-agent && poe manage
-# > Pick up TASK-118 on Tillicum. Keep me posted on progress and spend.
+# poe manage
 # ```
 #
-# Come back to it the same way. `poe manage` resumes the conversation that is already
-# supervising those runs rather than opening an empty one beside it, so "how are they
-# going?" is a question the session can already answer.
+# That resumes the conversation already supervising those runs rather than opening an empty
+# one beside it, so "how are they going?" is a question the session can already answer. Pass
+# an opening message if you have one ready — `poe manage "How are my runs going?"` — and it
+# is the same resumed conversation, just with the first thing typed for you.
 #
 # When the work is done the durable record is the Notion row — each agent writes its own
 # findings there — and the allocation is gone, because the manager drops it. Nothing is left

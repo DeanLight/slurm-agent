@@ -130,8 +130,28 @@ def test_the_quick_start_shows_commands_rather_than_running_them_for_you():
     # Setup is init, then hc until green. Nothing else is run for you.
     assert "# !uv run poe init" in src
     assert "# !uv run poe hc --full" in src
-    # And the work is two bash blocks you paste, not cells you edit first.
-    assert src.count('# %% language="bash"') == 2
+    # And the work is one bash block you paste, not a cell you edit first.
+    assert src.count('# %% language="bash"') == 1
+
+
+def test_the_quick_start_hands_over_to_an_interactive_manager():
+    """`poe manage` is taught without `-p`, and says what to ask it.
+
+    `-p` prints and exits, so a quick start built out of `-p` calls teaches a thing that is
+    not the interface: no conversation to come back to, and — since Remote Control is
+    interactive-only — nothing on your phone. It earns its place once, to capture task ids
+    into a shell variable, and the block that uses it ends by printing the plain
+    `poe manage` command to paste next.
+    """
+    src = (ROOT / "docs" / "quickstart.py").read_text()
+    body = "\n".join(_quickstart_bash())
+    assert body.count("poe manage -p") == 1, "`-p` is the exception, not the lesson"
+    assert "poe manage \"Pick up these tasks on Tillicum" in body, (
+        "the block must print the interactive command, with the real ids already in it")
+
+    # And the notebook says what to type at that prompt, rather than leaving you there.
+    assert "ask it things" in src
+    assert "How are my runs going, and what have they cost so far?" in src
     for command in ("poe job-up", "poe agent-run", "poe agent-batch", "poe agent-watch",
                     "poe job-down", "poe flush", "poe status", "poe agent-logs"):
         assert f"# !uv run {command}" not in src, f"the quick start runs {command} itself"
@@ -177,26 +197,23 @@ def test_the_quick_starts_bash_runs_as_pasted():
     import subprocess
 
     blocks = _quickstart_bash()
-    assert len(blocks) == 2, f"expected two pasteable blocks, found {len(blocks)}"
+    assert len(blocks) == 1, f"expected one pasteable block, found {len(blocks)}"
 
-    for block in blocks:
-        done = subprocess.run(["bash", "-n", "-c", block], capture_output=True, text=True)
-        assert done.returncode == 0, f"not valid bash:\n{block}\n{done.stderr}"
+    (opener,) = blocks
+    done = subprocess.run(["bash", "-n", "-c", opener], capture_output=True, text=True)
+    assert done.returncode == 0, f"not valid bash:\n{opener}\n{done.stderr}"
 
-    opener, update = blocks
-    # The ids go into a variable and straight into the next session — nothing to fill in.
-    # The first call is a bare `claude -p` on purpose: inventing two rows is scaffolding for
-    # the walkthrough, standing in for the spec or sync-up that filed them in real use. The
-    # reader deletes it. Everything that is actually managing work goes through `poe manage`.
-    assert "IDS=$(claude -p" in opener
+    # The ids go into a variable and straight into the command printed for you — nothing to
+    # fill in, and no second window where a shell variable would not exist.
+    assert "IDS=$(poe manage -p" in opener
     assert 'echo "opened: $IDS"' in opener
-    assert "poe manage -p" in opener, "spinning work up is the manager's entry point"
-    assert "Pick up these tasks on Tillicum: $IDS" in opener
+    assert "$IDS" in opener
     assert "TASK-1" not in opener, "a placeholder id means the reader has to edit it"
-    # The update needs no ids: the manager re-derives everything from the cluster. It is the
-    # same entry point and the same conversation as the launch — which is why it can answer
-    # at all, rather than meeting a fresh session that never heard of those runs.
-    assert "poe manage -p" in update and "IDS" not in update
+    # And what it prints is the INTERACTIVE form. A quick start whose last word is `-p`
+    # leaves you with no conversation to come back to and nothing on your phone.
+    printed = opener.split("cat <<", 1)[1]
+    assert "poe manage \"Pick up these tasks on Tillicum" in printed
+    assert "-p" not in printed.split("\n")[1]
 
 
 def test_the_manager_skill_grounds_work_in_notion():
