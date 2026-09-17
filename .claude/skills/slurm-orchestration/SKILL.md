@@ -51,7 +51,8 @@ cannot finish. Five things it proves that you would otherwise discover expensive
   node's is a separate credential, and an agent without it dies at launch.
 - **Each MCP server is authorised on both machines** — Notion and GitHub, one row each.
   A separate grant that expires separately: you can be logged in to Claude and still have
-  an agent that cannot read its task or write its findings back.
+  an agent that cannot read its task or write its findings back. Plain `poe hc` lists these
+  rows as `SKIPPED`; only `--full` proves them, and `SKIPPED` is never a pass.
 - **Git is authenticated on both machines**, with a `--dry-run` push that proves *write*,
   not just read. `ls-remote` succeeds on a public repo with no credential at all.
 - **An allocation outlives the ssh that asked for it** — every lease depends on it.

@@ -505,6 +505,11 @@ def healthcheck(cluster: ClusterConfig, manager: ManagerConfig,
     # first thing to go wrong, because an expired OAuth grant looks exactly like a broken
     # repo until you read the error.
     checks.append(_claude_auth(local or local_runner(), where=LAPTOP))
+    # And the servers it reaches Notion and GitHub through. Named in every tier, proved in
+    # the full one: being logged in to Claude says nothing about whether Notion answers.
+    mcp_here = mcp_path or Path(".mcp.json")
+    checks.extend(mcp_rows(local or local_runner(timeout=300), mcp_here,
+                           where=LAPTOP, full=full, tasks=tasks))
 
     # ── FAST · the login node ────────────────────────────────────────────────────
     try:
@@ -529,6 +534,9 @@ def healthcheck(cluster: ClusterConfig, manager: ManagerConfig,
                             detail="skipped: login node unreachable"))
         checks.append(Check(name="claude auth", ok=None, where=login,
                             detail="skipped: login node unreachable"))
+        for name in mcp_servers(cluster_mcp_path or Path("config/mcp.json")):
+            checks.append(Check(name=f"mcp {name}", ok=None, where=login,
+                                detail="skipped: login node unreachable"))
         for repo in repos:
             checks.append(Check(name=f"github {repo}", ok=None, where=login,
                                 detail="skipped: login node unreachable"))
@@ -542,6 +550,11 @@ def healthcheck(cluster: ClusterConfig, manager: ManagerConfig,
             checks.append(_tmux(run, where=login))
         checks.extend(_github_access(run, repos, login, push=full))
         checks.append(_claude_auth(run, where=login))
+        # The agent's servers, under the agent's flags: the login node holds its own OAuth
+        # grants, and the agent is the one that has to write findings back to the task.
+        cluster_mcp = cluster_mcp_path or Path("config/mcp.json")
+        checks.extend(mcp_rows(run, cluster_mcp, where=login, full=full, tasks=tasks,
+                               mcp_config=_inline_mcp(cluster_mcp) if full else None))
         # ── FAST · each staged repo ──────────────────────────────────────────────
         checks.extend(_remote_envrc(run, cluster, agents))
 
@@ -552,26 +565,9 @@ def healthcheck(cluster: ClusterConfig, manager: ManagerConfig,
         # cannot think is as stuck as an agent that cannot start, and finding out at launch
         # wastes the allocation that was brought up for it.
         checks.append(_agent_credential(local or local_runner(timeout=120), where=LAPTOP))
-        # And that its MCP servers answer. Being logged in to claude says nothing about
-        # whether Notion will: they are separate OAuth grants that expire separately, and
-        # a launch with no task id is not allowed. Failing here costs a few cents; failing
-        # at launch costs the allocation that was brought up for the work.
-        for server in mcp_servers(mcp_path or Path(".mcp.json")):
-            checks.append(_mcp_check(local or local_runner(timeout=300), server,
-                                     where=LAPTOP, tasks=tasks))
     if full and reachable:
         checks.append(_allocation_probe(run, cluster))
         checks.append(_agent_credential(run, where=login))
-        # The agent's servers, under the agent's flags. The login node holds its own OAuth
-        # grants, and the agent is the one that has to write findings back to the task.
-        cluster_mcp = cluster_mcp_path or Path("config/mcp.json")
-        servers = mcp_servers(cluster_mcp)
-        if servers:
-            inline = json.dumps({"mcpServers":
-                                 json.loads(cluster_mcp.read_text())["mcpServers"]})
-            for server in servers:
-                checks.append(_mcp_check(run, server, where=login, tasks=tasks,
-                                         mcp_config=inline))
     elif full:
         checks.append(Check(name="allocation probe", ok=None, where=login,
                             detail="skipped: login node unreachable"))
@@ -950,6 +946,40 @@ def _mcp_check(run: Runner, server: str, *, where: str = LAPTOP,
                  fix=None if ok else fix)
 
 
+def _inline_mcp(config: Path) -> str | None:
+    """The cluster's server list as a `--mcp-config` argument, or None if unreadable."""
+    try:
+        return json.dumps({"mcpServers": json.loads(config.read_text())["mcpServers"]})
+    except (OSError, ValueError, KeyError):
+        return None
+
+
+def mcp_rows(run: Runner, config: Path, *, where: str = LAPTOP, full: bool = False,
+             tasks: "TaskConfig | None" = None, mcp_config: str | None = None) -> list[Check]:
+    """One row per declared server, for one machine — in BOTH tiers.
+
+    The FAST tier cannot prove a grant without spending a cent, but it can still say the
+    servers exist and that nothing has proved them, which is the difference between a
+    report you can read and one that is silent about its most common failure. A check that
+    only appears under `--full` is a check nobody sees; the one thing worse is a check that
+    silently produces no rows at all, which is why an unreadable config fails loudly here
+    rather than quietly agreeing there is nothing to test.
+    """
+    servers = mcp_servers(config)
+    if not servers:
+        return [Check(name="mcp servers", ok=False, where=where,
+                      detail=f"{config} declares none — an agent has no way to read its "
+                             "task or write its findings back",
+                      fix=f"restore {config} from the repo")]
+    if not full:
+        return [Check(name=f"mcp {name}", ok=None, where=where,
+                      detail=f"declared in {config}, not proved — `poe hc --full` calls "
+                             "one of its tools and spends about a cent")
+                for name in servers]
+    return [_mcp_check(run, name, where=where, tasks=tasks, mcp_config=mcp_config)
+            for name in servers]
+
+
 def _claude_auth(run: Runner, *, where: str = LAPTOP) -> Check:
     """Is claude logged in here? Free, instant, and the first thing to go wrong.
 
@@ -1231,6 +1261,33 @@ if test():
     # An old claude with no `auth` subcommand must read as "not logged in", not as a crash.
     assert _claude_auth(FakeRunner({})).ok is False
     display(render([row]))
+
+
+# %%
+if test():
+    # Both tiers name every server. The FAST one cannot prove a grant without spending, but
+    # a check that only appears under `--full` is a check nobody sees — and "my hc does not
+    # mention the MCPs" is indistinguishable from "this repo does not check them".
+    with tempfile.TemporaryDirectory() as tmp:
+        cfg_p = Path(tmp) / "mcp.json"
+        cfg_p.write_text('{"mcpServers": {"notion": {}, "github": {}}}')
+
+        fast = mcp_rows(FakeRunner({}), cfg_p)
+        assert [c.name for c in fast] == ["mcp notion", "mcp github"]
+        # SKIPPED, never ok: a row that has proved nothing must not read as a pass, and it
+        # says which command would prove it.
+        assert all(c.ok is None and "poe hc --full" in c.detail for c in fast)
+        display(render(fast))
+
+        proved = mcp_rows(FakeRunner({"claude": '{"result": "x", "is_error": false}'}),
+                          cfg_p, full=True)
+        assert all(c.ok for c in proved)
+
+    # A config that is missing or says nothing FAILS, loudly. Returning no rows would let
+    # the most common failure in this repo disappear from the report entirely.
+    gone = mcp_rows(FakeRunner({}), Path("/nonexistent/mcp.json"))
+    assert len(gone) == 1 and gone[0].ok is False and gone[0].name == "mcp servers"
+    display(render(gone))
 
 
 # %%
