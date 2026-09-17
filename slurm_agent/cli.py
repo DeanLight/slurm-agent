@@ -17,7 +17,6 @@ from slurm_agent.config import (
     ManagerConfig,
     MonitorConfig,
     SupervisionConfig,
-    declared_env_keys,
     load,
 )
 
@@ -34,25 +33,11 @@ def _runner():
     return ssh_runner(_cluster().login_host)
 
 
-LEDGER = "ledger.jsonl"
+def _ledger() -> str:
+    """The usage ledger, on the cluster — the cron entry writes it, the manager reads it."""
+    from slurm_agent import monitor
 
-
-def _notifier():
-    """A `send(subject, body)` bound to the configured channels, or None if unconfigured."""
-    from slurm_agent.notify import NotifyConfig, notify
-
-    from slurm_agent.notify import secret_keys
-
-    cfg = load("config/notify.yaml", NotifyConfig)
-    keys = secret_keys(declared_env_keys(load("config/manager.yaml", ManagerConfig), []))
-    return lambda subject, body: notify(subject, body, cfg, keys)
-
-
-def _notify_config():
-    """config/notify.yaml — which channels are on, and so which keys are actually needed."""
-    from slurm_agent.notify import NotifyConfig
-
-    return load("config/notify.yaml", NotifyConfig)
+    return monitor.ledger_path(_cluster())
 
 
 def _task_config():
@@ -71,14 +56,6 @@ def _agents() -> dict[str, AgentConfig]:
     from slurm_agent.config import load_agents
 
     return load_agents()
-
-
-def _notify_test():
-    from slurm_agent import notify as notifier
-
-    cfg = load("config/notify.yaml", notifier.NotifyConfig)
-    keys = notifier.secret_keys(declared_env_keys(_manager(), list(_agents().values())))
-    return notifier.notify_test(cfg, keys, run=_runner())
 
 
 def _report(checks) -> None:
@@ -103,7 +80,7 @@ def _views():
 
 # ── setup ────────────────────────────────────────────────────────────────────────
 @app.command
-def init(send: bool = True) -> None:
+def init() -> None:
     """Create the local footprint, then run a full healthcheck."""
     from slurm_agent import preflight
 
@@ -113,21 +90,17 @@ def init(send: bool = True) -> None:
     # because creating and checking the same three files produced two sections saying the
     # same things — and a creation failure got told twice, the first time in ssh's words.
     created = preflight.init(cluster, manager, agents, run)
-    _report(preflight.healthcheck(cluster, manager, agents, run, full=True, send=send,
-                                  notify=_notify_config(), tasks=_task_config(),
-                                  created=created,
-                                  notify_test=_notify_test if send else None))
+    _report(preflight.healthcheck(cluster, manager, agents, run, full=True,
+                                  tasks=_task_config(), created=created))
 
 
 @app.command
-def healthcheck(full: bool = False, send: bool = False) -> None:
+def healthcheck(full: bool = False) -> None:
     """Is everything wired and working? Fast by default; `--full` adds the slow proofs."""
     from slurm_agent import preflight
 
     _report(preflight.healthcheck(_cluster(), _manager(), _agents(), _runner(),
-                                  full=full, send=send, notify=_notify_config(),
-                                  tasks=_task_config(),
-                                  notify_test=_notify_test if send else None))
+                                  full=full, tasks=_task_config()))
 
 
 # ── allocations ──────────────────────────────────────────────────────────────────
@@ -318,30 +291,22 @@ def flush(older_than: str = "7d", failed: bool = False, session: str | None = No
         print("failed runs kept — their agent.err is the only record of why they died")
 
 
-# ── notifications and usage ──────────────────────────────────────────────────────
-@app.command(name="notify-test")
-def notify_test() -> None:
-    """Really send one message per channel, from here and from the cluster."""
-    from slurm_agent import notify as notifier
-    from slurm_agent.config import ManagerConfig, declared_env_keys
+# ── usage ────────────────────────────────────────────────────────────────────────
+@app.command
+def spend(limit: int = 3) -> None:
+    """What the scheduled polls have recorded about cost. The manager reads this."""
+    from slurm_agent import monitor
 
-    cfg = load("config/notify.yaml", notifier.NotifyConfig)
-    manager = load("config/manager.yaml", ManagerConfig)
-    keys = notifier.secret_keys(declared_env_keys(manager, []))
-    rows = notifier.notify_test(cfg, keys, run=_runner())
-    for where, ok, detail in rows:
-        print(f"{where:<9} {'ok' if ok else 'FAILED':<7} {detail}")
-    raise SystemExit(0 if all(ok for _, ok, _ in rows) else 1)
+    print(monitor.spend(_runner(), _ledger(), limit=limit))
 
 
 @app.command(name="monitor-run")
 def monitor_run(dry_run: bool = False) -> None:
-    """Poll usage and send the digest, but only if spend actually moved."""
+    """Poll usage and record a digest, but only if spend actually moved."""
     from slurm_agent import monitor
 
     cfg = load("config/monitor.yaml", MonitorConfig)
-    send = None if dry_run else _notifier()
-    print(monitor.monitor_run(_runner(), cfg, LEDGER, dry_run=dry_run, send=send))
+    print(monitor.monitor_run(_runner(), cfg, _ledger(), dry_run=dry_run))
 
 
 @app.command(name="monitor-install")
@@ -362,7 +327,7 @@ def monitor_status() -> None:
     """Is the schedule on, when did it last fire, when does it fire next."""
     from slurm_agent import monitor
 
-    print(monitor.cron_status(LEDGER))
+    print(monitor.cron_status(_runner(), _ledger()))
 
 
 @app.command(name="monitor-uninstall")

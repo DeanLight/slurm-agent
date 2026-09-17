@@ -81,8 +81,8 @@ status       = {cmd = "slurm-agent status", help = "What is running, queued, com
 flush        = {cmd = "slurm-agent flush", help = "Drop finished runs from status"}
 
 # ── notifications and usage ─────────────────────────────────────────────────────
-notify-test       = {cmd = "slurm-agent notify-test", help = "Really send one message per channel"}
-monitor-run       = {cmd = "slurm-agent monitor-run", help = "Poll usage; send only if spend moved"}
+spend             = {cmd = "slurm-agent spend", help = "What the scheduled polls recorded about cost"}
+monitor-run       = {cmd = "slurm-agent monitor-run", help = "Poll usage; record only if spend moved"}
 monitor-install   = {cmd = "slurm-agent monitor-install", help = "Install the digest schedule here"}
 monitor-uninstall = {cmd = "slurm-agent monitor-uninstall", help = "Remove the digest schedule"}
 monitor-status    = {cmd = "slurm-agent monitor-status", help = "Is the schedule on, and when does it fire"}

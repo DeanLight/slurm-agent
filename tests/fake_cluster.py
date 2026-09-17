@@ -49,6 +49,12 @@ ANSWERS: list[tuple[str, str]] = [
      '{"session_id": "4f2cabcd", "task": "TASK-118", "leases_used": 1, "max_leases": 4,'
      ' "agent_kind": "smoke", "job_name": "dev", "log_dir": "/run/4f2cabcd/evidence",'
      ' "run_dir": "~/.slurm-agent/runs/4f2cabcd", "mode": "interactive"}'),
+    # The usage ledger the cron entry writes and `spend` reads. Two rows, one of them a
+    # digest, so the rendering path a manager actually reports from is exercised.
+    (r"cat \S*usage\.jsonl",
+     '{"observed_at": "2026-09-01 09:00", "usage": {}, "digest": false}\n'
+     '{"observed_at": "2026-09-04 09:00", "usage": {}, "digest": true,'
+     ' "body": "safedesign  $498.30 (+86.00) of $900.00"}\n'),
     (r"cat \S*status\.json",
      '{"state": "running", "round": "1/2", "notebook": "/run/4f2cabcd/evidence/smoke.ipynb"}'),
     # Two different claude calls, and they must not answer each other's question:

@@ -21,7 +21,6 @@ from slurm_agent.config import (
     SupervisionConfig,
     load,
 )
-from slurm_agent.notify import NotifyConfig
 from slurm_agent.tasks import TaskConfig
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -29,7 +28,6 @@ CONFIGS = {
     "cluster.yaml": ClusterConfig,
     "manager.yaml": ManagerConfig,
     "monitor.yaml": MonitorConfig,
-    "notify.yaml": NotifyConfig,
     "supervision.yaml": SupervisionConfig,
     "tasks.yaml": TaskConfig,
 }

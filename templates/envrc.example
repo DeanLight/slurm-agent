@@ -1,7 +1,7 @@
 # The COMMITTED template. Two files are made from it, and they are not the same file:
 #
 #   * your laptop's .envrc  — `poe init` writes it, commenting out the keys that are not
-#     read here. It holds the keys for reaching YOU.
+#     read here. The shipped repo needs none, so this copy is normally all comments.
 #   * a cluster-side .envrc — you copy this file yourself, beside the repo an agent runs
 #     in, and fill in that agent's keys there:
 #         scp templates/envrc.example tillicum-login:~/work/<repo>/.envrc
@@ -16,24 +16,14 @@
 
 # ── keys ──────────────────────────────────────────────────────────────────────
 
-# ── email · read on your LAPTOP, only when the email channel is on ────────────
-# The usage digest, and agents announcing themselves.
-SLURM_AGENT_SMTP_HOST=<secret-here>
-SLURM_AGENT_SMTP_USER=<secret-here>
-# An app password, never your account password.
-SLURM_AGENT_SMTP_PASSWORD=<secret-here>
-# Optional: defaults to 587 when unset. `poe hc` says so and never fails on it.
-SLURM_AGENT_SMTP_PORT=<secret-here>
-
-# ── slack · read on your LAPTOP, only when the slack channel is on ────────────
-# An incoming webhook URL: https://api.slack.com/messaging/webhooks
-# Do not want Slack? Remove `slack` from `channels` in config/notify.yaml, and this key
-# stops being required — `poe hc` derives what it needs from the channels you turned on.
-SLURM_AGENT_SLACK_WEBHOOK=<secret-here>
+# ── declared by config/manager.yaml · read on your LAPTOP ─────────────────────
+# `requires_env` is empty in the shipped config, so there is nothing live here. The
+# manager reaches you by talking to you — it holds no credential for that. Put a key here
+# only when the manager itself reads one.
 
 # ── declared by agents/*.yaml · read on the CLUSTER, in the staged repo ───────
-# The agents shipped here declare no keys, so there is nothing live below. When one of
-# yours does, add the key here — and note that it is read in the `.envrc` beside that
+# The agents shipped here declare no keys, so there is nothing live below either. When one
+# of yours does, add the key here — and note that it is read in the `.envrc` beside that
 # agent's `workdir` on the cluster, never on your laptop. `poe init` writes the laptop's
 # copy with any such key COMMENTED OUT and the remote path beside it, and `poe hc` checks
 # it over there and prints that path. For example:

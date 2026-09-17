@@ -34,10 +34,32 @@ def _template_pairs() -> dict[str, str]:
     return pairs
 
 
+def _every_pair() -> dict[str, str]:
+    """Assignments in the template, commented ones included.
+
+    A commented example is still a line someone will uncomment and a line a leak can hide
+    in, so it is held to the same rule as a live one.
+    """
+    pairs = {}
+    for line in TEMPLATE.read_text().splitlines():
+        line = line.strip().lstrip("#").strip()
+        if not line or "=" not in line or " " in line.partition("=")[0]:
+            continue
+        key, _, value = line.partition("=")
+        pairs[key.strip()] = value.strip()
+    return pairs
+
+
 def test_template_holds_no_real_values():
-    """Every committed value is the placeholder, never a credential."""
-    pairs = _template_pairs()
-    assert pairs, "template defines no keys"
+    """Every committed value is the placeholder, never a credential.
+
+    The shipped template declares no LIVE key at all — the manager needs none and no
+    shipped agent declares one — so the guard is over the commented examples too.
+    Otherwise this test would pass by having nothing to check, which is how a leak gets in
+    later.
+    """
+    pairs = _every_pair()
+    assert pairs, "template shows no keys at all, not even an example"
     offenders = {k: v for k, v in pairs.items() if v != SECRET_PLACEHOLDER}
     assert not offenders, f"non-placeholder values in the committed template: {sorted(offenders)}"
 
@@ -45,15 +67,13 @@ def test_template_holds_no_real_values():
 def test_template_covers_exactly_the_declared_keys():
     """The example matches every key this repo can ask for, from wherever it is declared.
 
-    Three sources, and the template is the one place they are all visible: the manager's
-    own `requires_env`, each agent's, and the notification channels' — which are derived
-    from `CHANNEL_KEYS` rather than listed by hand, so a new channel cannot be added
-    without the template growing its key.
+    Two sources, and the template is the one place both are visible: the manager's own
+    `requires_env` and each agent's. The shipped repo declares neither, so the expected
+    set is empty and the template is all comments — which is the point. A fork that adds
+    a key to a config and not to the template fails here.
     """
-    from slurm_agent.notify import all_keys
-
     manager = load(ROOT / "config" / "manager.yaml", ManagerConfig)
-    expected = sorted(set(declared_env_keys(manager, _agents())) | set(all_keys()))
+    expected = sorted(declared_env_keys(manager, _agents()))
     assert sorted(_template_pairs()) == expected
 
 

@@ -141,8 +141,8 @@ class ManagerConfig(BaseModel):
 
 # %%
 if test():
-    manager = ManagerConfig(requires_env=["SLURM_AGENT_SMTP_PASSWORD"])
-    assert manager.requires_env == ["SLURM_AGENT_SMTP_PASSWORD"]
+    manager = ManagerConfig(requires_env=["SLURM_AGENT_TEST_KEY"])
+    assert manager.requires_env == ["SLURM_AGENT_TEST_KEY"]
     assert manager.envrc == Path(".envrc")
     display(manager.model_dump())
 
@@ -221,8 +221,9 @@ if test():
 # ## Supervision and monitoring
 #
 # `supervision.yaml` is what "stuck" means, written down, so a kill is a rule firing rather
-# than a judgement call. `monitor.yaml` carries cadence and thresholds only — channels and
-# recipients live in `notify.yaml`, because the digest is not the only sender.
+# than a judgement call. `monitor.yaml` carries cadence and thresholds only — there is
+# nowhere to send a digest, because the digest is written to the cluster and the manager
+# is what reads it out to you.
 
 # %%
 class SupervisionConfig(BaseModel):
@@ -240,7 +241,7 @@ class SupervisionConfig(BaseModel):
 
 
 class MonitorConfig(BaseModel):
-    """`config/monitor.yaml` — how often the usage digest speaks, and about what."""
+    """`config/monitor.yaml` — how often the usage digest is taken, and about what."""
 
     model_config = ConfigDict(extra="forbid")
 
@@ -349,13 +350,13 @@ if test():
                           max_budget_usd=1, requires_env=["HF_TOKEN", "SHARED"])
     agent_b = AgentConfig(repo="b", ref="r", workdir="w", log_dir="d",
                           max_budget_usd=1, requires_env=["SHARED"])
-    manager_cfg = ManagerConfig(requires_env=["SLURM_AGENT_SMTP_PASSWORD"])
+    manager_cfg = ManagerConfig(requires_env=["SLURM_AGENT_TEST_KEY"])
 
     keys = declared_env_keys(manager_cfg, [agent_a, agent_b])
-    assert keys == ["HF_TOKEN", "SHARED", "SLURM_AGENT_SMTP_PASSWORD"]
+    assert keys == ["HF_TOKEN", "SHARED", "SLURM_AGENT_TEST_KEY"]
 
     env = {"HF_TOKEN": "hf_real", "SHARED": SECRET_PLACEHOLDER}
-    assert missing_env(keys, env) == ["SHARED", "SLURM_AGENT_SMTP_PASSWORD"]
+    assert missing_env(keys, env) == ["SHARED", "SLURM_AGENT_TEST_KEY"]
     assert missing_env(keys, {k: "set" for k in keys}) == []
 
     display({"declared": keys, "missing": missing_env(keys, env)})

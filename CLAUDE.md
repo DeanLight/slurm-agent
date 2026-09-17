@@ -72,15 +72,24 @@ an agent. That rule is what makes a closed laptop lossless and two sessions agre
   the manager connects to fine. And the probe must ask for a `FAILED:` sentinel, because a
   session whose server is dead exits 0, spends its cent, and explains at length that it
   could not help — `is_error` stays false.
-- **A key is required because something reads it, never because a list says so.** Which
-  notification keys the laptop needs is derived from `config/notify.yaml`'s `channels` via
-  `notify.CHANNEL_KEYS`, which the senders themselves read through. `manager.requires_env`
-  is empty on purpose. A hand-kept list is wrong in both directions, and the quiet
-  direction is the dangerous one: turn Slack on without updating it and `hc` passes while
-  the escalation never arrives. A key with a default (`SMTP_PORT`) is reported, never
-  failed. Optional means OFF: `config/notify.yaml` ships `channels: [email]`, because a
-  channel that is on but cannot send is worse than one that is off — you find out when
-  nothing arrives.
+- **The manager is the only channel, and there is no sender to configure.** Nothing here
+  sends email or posts to Slack. A supervision threshold firing is a `NEEDS YOU` line
+  returned by `act()` and read by whoever is running the loop; cost accumulated while
+  nobody was looking is appended to `usage.jsonl` under the run root **on the cluster** and
+  read back with `poe spend`. That is the one rule again: the cron entry and the manager
+  are different processes on different schedules, so the fact they share lives on the
+  shared filesystem, not on the laptop. A second channel would let a decision arrive by
+  email while the session that made it said nothing, and the two would disagree. If the
+  human wants this on their phone they start the manager with `claude --remote-control`,
+  which mirrors the session to claude.ai without moving where it runs. `manager.requires_env`
+  is therefore empty, `.envrc` on the laptop is all comments, and `my keys` is green with
+  nothing to demand.
+- **A key is required because something reads it, never because a list says so.** The
+  laptop is asked for `manager.requires_env` and nothing else; an agent's keys are checked
+  in the staged repo that reads them. A hand-kept list is wrong in both directions, and the
+  quiet direction is the dangerous one — a list that passes while the thing it describes
+  cannot work. The env template is generated from the declared keys and a test pins the
+  two together, commented examples included, so it cannot pass by having nothing to check.
 - **The report is the only output.** No inventory beside it, and no separate account of
   what was created: the group headings already name every place and every managed repo, and
   `init` returns notes — keyed by (place, row) — that fold into the row they are about.
@@ -103,8 +112,8 @@ an agent. That rule is what makes a closed laptop lossless and two sessions agre
 - `poe init` **creates** the local footprint; `poe healthcheck` (alias `poe hc`) **verifies**
   it and creates nothing. `hc` is fast on purpose — run it after moving network or
   re-authing to Tillicum, where a dropped `ControlMaster` is the usual culprit.
-- `docs/quickstart.py` is **setup, and it stops there**: `init`, fill `.envrc`, `hc --full
-  --send`, then the `claude` commands to type. Every runnable cell is a bang magic, so the
+- `docs/quickstart.py` is **setup, and it stops there**: `init`, fill `.envrc`, `hc
+  --full`, then the `claude` commands to type. Every runnable cell is a bang magic, so the
   notebook shows the real command rather than running it through a helper — a wrapper would
   hide the only thing worth seeing and prove something you cannot repeat in a terminal. It
   is the one notebook this repo commits with outputs, because those outputs are the proof a

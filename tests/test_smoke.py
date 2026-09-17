@@ -31,6 +31,7 @@ ROOT = Path(__file__).resolve().parent.parent
 COMMANDS: list[list[str]] = [
     ["healthcheck"],
     ["healthcheck", "--full"],
+    ["spend"],
     ["job-up", "dev"],
     ["job-status"],
     ["job-down", "dev"],
@@ -45,6 +46,7 @@ COMMANDS: list[list[str]] = [
     ["status"],
     ["flush", "--dry-run"],
     ["monitor-run", "--dry-run"],
+    ["monitor-run"],
     ["monitor-status"],
 ]
 
@@ -82,11 +84,9 @@ def cluster(monkeypatch, tmp_path):
 
     # A filled .envrc, so `hc` answers about keys rather than about a missing file.
     envrc = tmp_path / ".envrc"
-    envrc.write_text("SLURM_AGENT_SMTP_HOST=h\n")
+    envrc.write_text("SLURM_AGENT_TEST_KEY=h\n")
     envrc.chmod(0o600)
-    for key, value in (("SLURM_AGENT_SMTP_HOST", "h"), ("SLURM_AGENT_SMTP_USER", "u"),
-                       ("SLURM_AGENT_SMTP_PASSWORD", "p")):
-        monkeypatch.setenv(key, value)
+    monkeypatch.setenv("SLURM_AGENT_TEST_KEY", "h")
     monkeypatch.setattr(cli, "_manager", lambda: ManagerConfig(envrc=envrc))
 
     # `job-up` rewrites the node's Hostname into a real local file. Point it at a scratch
@@ -129,10 +129,9 @@ def test_the_command_list_is_complete():
     """A command nobody smoke-tests is a command nobody runs until a user does."""
     covered = {argv[0] for argv in COMMANDS}
     # Exempt because each does something a smoke run must not: `init` writes into the
-    # developer's ~/.ssh, `notify-test` really sends, `monitor-install`/`-uninstall` edit a
-    # live crontab, and `session-new` takes a name and writes a file.
-    exempt = {"init", "notify-test", "session-new", "monitor-install", "monitor-uninstall",
-              "job-shell"}
+    # developer's ~/.ssh, `monitor-install`/`-uninstall` edit a live crontab, and
+    # `session-new` takes a name and writes a file.
+    exempt = {"init", "session-new", "monitor-install", "monitor-uninstall", "job-shell"}
     every = {n for name in cli.app for n in ([name] if isinstance(name, str) else name)}
     every = {n for n in every if not n.startswith("-")}
     assert every - covered - exempt == set(), \
@@ -162,8 +161,8 @@ def test_a_launch_record_says_where_the_agent_is_and_what_it_may_do(cluster):
     except SystemExit:
         pass
 
-    # Match the redirect TARGET, not the body: `remote_notify.py` mentions launch.json in
-    # its own docstring, and is written to the run root by the same heredoc idiom.
+    # Match the redirect TARGET, not the body: several files are written to the run root by
+    # the same heredoc idiom, and one of them can mention launch.json in its own text.
     written = [c for c in cluster.commands
                if c.startswith("cat > ") and c.split(" <<", 1)[0].endswith("launch.json")]
     assert written, "a launch must record what it did"

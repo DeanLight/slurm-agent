@@ -19,8 +19,7 @@
 # Two commands, because they answer two different questions at two different rhythms.
 #
 # * **`init` creates.** Run once, wiring a fresh clone to the cluster. It ends by running a
-#   full healthcheck *including real sends*, so setting up finishes with a proof rather
-#   than an assumption.
+#   full healthcheck, so setting up finishes with a proof rather than an assumption.
 # * **`healthcheck` verifies** and creates nothing. Fast by default — seconds, no tokens,
 #   no GPU, no messages — so `poe hc` is worth typing every time you move network or
 #   re-auth. The single most common "everything is broken" cause is a dropped
@@ -54,7 +53,6 @@ from slurm_agent.config import (
     load,
     missing_env,
 )
-from slurm_agent.notify import NotifyConfig
 from slurm_agent.tasks import TaskConfig
 from slurm_agent.remote import Runner, RemoteError, local_runner, quote, remote_path
 
@@ -359,7 +357,7 @@ if test():
 
     from tests.conftest import FakeRunner
 
-    manager = ManagerConfig(requires_env=["SLURM_AGENT_SMTP_HOST"])
+    manager = ManagerConfig(requires_env=["SLURM_AGENT_TEST_KEY"])
     cluster = ClusterConfig(login_host="h")
 
     with tempfile.TemporaryDirectory() as tmp:
@@ -374,9 +372,9 @@ if test():
         display(envrc.read_text().splitlines()[-4:])
 
         # Never overwritten: it is the one file holding irreplaceable human input.
-        envrc.write_text("SLURM_AGENT_SMTP_HOST=real.smtp.host\n")
+        envrc.write_text("SLURM_AGENT_TEST_KEY=real.smtp.host\n")
         init(cluster, manager, {}, FakeRunner(), envrc=envrc, ssh_dir=Path(tmp) / "ssh")
-        assert envrc.read_text() == "SLURM_AGENT_SMTP_HOST=real.smtp.host\n"
+        assert envrc.read_text() == "SLURM_AGENT_TEST_KEY=real.smtp.host\n"
 
 
 # %%
@@ -423,24 +421,34 @@ if test():
 
 # %%
 if test():
-    # The copy must not inherit prose that is only true of the template, and must not
-    # present a key it never reads as something to fill in.
-    written = _render_template(
-        ClusterConfig(login_host="tillicum-login"),
-        ManagerConfig(requires_env=["SLURM_AGENT_SMTP_HOST"]),
-        {"experiment-runner": AgentConfig(repo="r", ref="main", workdir="~/work/baselines",
-                                          log_dir="e", max_budget_usd=1,
-                                          requires_env=["HF_TOKEN"])},
-    )
-    # Template-only prose is gone; a header about THIS file replaces it.
+    # The copy must not inherit prose that is only true of the template. Against the
+    # SHIPPED template — which declares no keys anywhere, because a fork must not inherit
+    # someone else's — the copy is a header and comments, and that is the correct answer:
+    # this repo needs no secret on the laptop.
+    written = _render_template(ClusterConfig(login_host="tillicum-login"),
+                               ManagerConfig(), {})
     assert "This file is read ON THIS LAPTOP ONLY" in written
+    assert "none declared in config/manager.yaml" in written
     # Nothing about the template being committed, or about the test that guards it.
     assert "committed" not in written and TEMPLATE_BODY_MARK not in written
-    # The manager's key is live; the agent's is commented out and points somewhere real.
-    assert "\nSLURM_AGENT_SMTP_HOST=" in written
+    display(written.split("\n\n")[0])
+
+
+# %%
+if test():
+    # And the part a fork exercises: a key the laptop reads stays live, one only an agent
+    # reads is commented out and annotated with the machine and path it belongs in.
+    body = "MANAGER_KEY=<secret-here>\nHF_TOKEN=<secret-here>\n"
+    header = _copy_header(
+        ClusterConfig(login_host="tillicum-login"), ["MANAGER_KEY"],
+        {"experiment-runner": AgentConfig(repo="r", ref="main", workdir="~/work/baselines",
+                                          log_dir="e", max_budget_usd=1,
+                                          requires_env=["HF_TOKEN"])})
+    written = header + _comment_out_foreign(body, ["MANAGER_KEY"])
+    assert "\nMANAGER_KEY=" in written
     assert "\n# HF_TOKEN=" in written
     assert "tillicum-login:~/work/baselines/.envrc" in written
-    display(written.split("\n\n")[0])
+    display(written)
 
 
 # %% [markdown]
@@ -449,9 +457,8 @@ if test():
 # %%
 def healthcheck(cluster: ClusterConfig, manager: ManagerConfig,
                 agents: dict[str, AgentConfig], run: Runner, *, full: bool = False,
-                send: bool = False, envrc: Path | None = None,
+                envrc: Path | None = None,
                 env: dict[str, str] | None = None, ssh_dir: Path | None = None,
-                notify: "NotifyConfig | None" = None, notify_test=None,
                 local: Runner | None = None, tasks: "TaskConfig | None" = None,
                 mcp_path: Path | None = None, cluster_mcp_path: Path | None = None,
                 created: dict[tuple[str, str], str] | None = None) -> list[Check]:
@@ -469,31 +476,19 @@ def healthcheck(cluster: ClusterConfig, manager: ManagerConfig,
     # ── FAST · this laptop ───────────────────────────────────────────────────────
     checks.append(_envrc_check(envrc))
 
-    # ONLY the manager's keys. An agent's keys are read on the compute node, out of the
-    # .envrc beside the repo it runs in — asking the laptop for an HF token would fail a
-    # correctly-configured machine and send you to fill in a file nothing ever reads.
-    #
-    # And only the keys the channels you turned ON need. Which keys those are is derived
-    # from config/notify.yaml rather than listed by hand, so turning a channel off stops
-    # its key being demanded, and turning one on starts — the direction that matters, since
-    # a hand-maintained list would pass while the escalation silently never arrived.
-    from slurm_agent import notify as notifier
-
-    keys = sorted(set(manager.requires_env) | set(notifier.required_keys(notify)))
+    # ONLY the manager's keys, which is normally none at all: the manager reaches you by
+    # talking to you, so it needs no credential for that. An agent's keys are read on the
+    # compute node, out of the .envrc beside the repo it runs in — asking the laptop for
+    # an HF token would fail a correctly-configured machine and send you to fill in a file
+    # nothing ever reads.
+    keys = sorted(set(manager.requires_env))
     absent = missing_env(keys, env)
-    defaulted = [k for k in notifier.defaulted_keys(notify) if not env.get(k)]
-    off = sorted(set(notifier.all_keys()) - set(keys) - set(defaulted))
     elsewhere = sorted({k for a in agents.values() for k in a.requires_env} - set(keys))
-    channels = ", ".join(notify.channels) if notify else "none configured"
     checks.append(Check(
         name="my keys", ok=not absent,
-        detail=f"{len(keys) - len(absent)}/{len(keys)} set for channels: {channels}"
+        detail=(f"{len(keys) - len(absent)}/{len(keys)} set" if keys else
+                "none needed — config/manager.yaml declares no keys")
                + (f" — missing {', '.join(absent)}" if absent else "")
-               + (f"\n[dim]defaulted:[/] {', '.join(defaulted)} unset, using the built-in "
-                  f"default ({notifier.SMTP_PORT_DEFAULT} for the SMTP port)"
-                  if defaulted else "")
-               + (f"\n[dim]not needed:[/] {', '.join(off)} — for a channel "
-                  "config/notify.yaml does not enable" if off else "")
                + (f"\n[dim]not checked here:[/] {', '.join(elsewhere)} — those belong in "
                   "the staged repos below" if elsewhere else ""),
         fix=f"fill them in in {envrc}" if absent else None,
@@ -581,18 +576,6 @@ def healthcheck(cluster: ClusterConfig, manager: ManagerConfig,
         checks.append(Check(name="allocation probe", ok=None, where=login,
                             detail="skipped: login node unreachable"))
 
-    # ── SEND ─────────────────────────────────────────────────────────────────────
-    if send and notify_test is not None:
-        for where, ok, detail in notify_test():
-            checks.append(Check(
-                name="notify send", ok=ok, detail=detail,
-                where=LAPTOP if where == "local" else login,
-                fix=None if ok else
-                ("check the SMTP/Slack keys in .envrc" if where == "local" else
-                 f"the cluster could not send — check python3 on {cluster.login_host}")))
-    else:
-        checks.append(Check(name="notify send", ok=None,
-                            detail="not attempted — run `poe init` or `poe hc --send`"))
     return _annotate(checks, created)
 
 
@@ -1017,10 +1000,10 @@ def _agent_credential(run: Runner, *, where: str = LAPTOP) -> Check:
 
 # %%
 if test():
-    good_env = {"SLURM_AGENT_SMTP_HOST": "smtp.x"}
+    good_env = {"SLURM_AGENT_TEST_KEY": "smtp.x"}
     with tempfile.TemporaryDirectory() as tmp:
         envrc = Path(tmp) / ".envrc"
-        envrc.write_text("SLURM_AGENT_SMTP_HOST=smtp.x\n")
+        envrc.write_text("SLURM_AGENT_TEST_KEY=smtp.x\n")
         envrc.chmod(0o600)
         ssh_dir = Path(tmp) / "ssh"
         ssh_dir.mkdir()
@@ -1045,7 +1028,6 @@ if test():
         assert not runner.asked("claude -p")
         assert runner.asked("claude auth status")
         assert rows["claude auth"].where == login_node(cluster)
-        assert rows["notify send"].ok is None
         display(render(list(rows.values())))
 
 
@@ -1053,7 +1035,7 @@ if test():
 if test():
     with tempfile.TemporaryDirectory() as tmp:
         envrc = Path(tmp) / ".envrc"
-        envrc.write_text("SLURM_AGENT_SMTP_HOST=smtp.x\n")
+        envrc.write_text("SLURM_AGENT_TEST_KEY=smtp.x\n")
         envrc.chmod(0o600)
 
         # tmux is checked in the FAST tier, because every allocation depends on it in the
@@ -1082,7 +1064,7 @@ if test():
     with tempfile.TemporaryDirectory() as tmp:
         # A group-readable .envrc FAILS. On a shared filesystem that is the real exposure.
         loose = Path(tmp) / ".envrc"
-        loose.write_text("SLURM_AGENT_SMTP_HOST=smtp.x\n")
+        loose.write_text("SLURM_AGENT_TEST_KEY=smtp.x\n")
         loose.chmod(0o644)
         rows = {c.name: c for c in healthcheck(cluster, manager, {}, FakeRunner(),
                                                envrc=loose, env=good_env)}
@@ -1095,45 +1077,34 @@ if test():
         unfilled.chmod(0o600)
         rows = {c.name: c for c in healthcheck(
             cluster, manager, {}, FakeRunner(), envrc=unfilled,
-            env={"SLURM_AGENT_SMTP_HOST": SECRET_PLACEHOLDER})}
+            env={"SLURM_AGENT_TEST_KEY": SECRET_PLACEHOLDER})}
         assert rows["my keys"].ok is False
-        assert "SLURM_AGENT_SMTP_HOST" in rows["my keys"].detail
+        assert "SLURM_AGENT_TEST_KEY" in rows["my keys"].detail
         display(rows["my keys"].detail)
 
 
 # %%
 if test():
-    # A channel you turned OFF must not be demanded, and a channel you turned ON must be —
-    # the second is the one that matters, because a hand-kept list gets it wrong silently
-    # and the escalation never arrives.
+    # The laptop is asked for the manager's OWN keys and nothing else. `requires_env` is
+    # empty in the shipped config, so the normal answer is "none needed" — a green row
+    # that demands nothing, rather than a red one about a file nothing reads.
     with tempfile.TemporaryDirectory() as tmp:
         envrc = Path(tmp) / ".envrc"
         envrc.write_text("x\n")
         envrc.chmod(0o600)
-        smtp = {"SLURM_AGENT_SMTP_HOST": "smtp.x", "SLURM_AGENT_SMTP_USER": "me",
-                "SLURM_AGENT_SMTP_PASSWORD": "pw"}
 
-        def keys_row(channels, env):
-            rows = healthcheck(cluster, ManagerConfig(), {}, FakeRunner(),
-                               envrc=envrc, env=env, notify=NotifyConfig(channels=channels))
+        def keys_row(manager, env):
+            rows = healthcheck(cluster, manager, {}, FakeRunner(), envrc=envrc, env=env)
             return next(c for c in rows if c.name == "my keys")
 
-        # Email only, and the webhook absent: nothing is missing.
-        email_only = keys_row(["email"], smtp)
-        assert email_only.ok, email_only.detail
-        assert "SLURM_AGENT_SLACK_WEBHOOK" in email_only.detail
-        assert "not needed" in email_only.detail
+        empty = keys_row(ManagerConfig(), {})
+        assert empty.ok and "none needed" in empty.detail
 
-        # Turn Slack on without adding the key, and it fails — loudly, here, rather than
-        # at the moment an agent needed a human.
-        both = keys_row(["email", "slack"], smtp)
-        assert both.ok is False
-        assert "SLURM_AGENT_SLACK_WEBHOOK" in both.detail
-
-        # The SMTP port has a default, so its absence is noted and never a failure.
-        assert "defaulted" in email_only.detail
-        assert "SLURM_AGENT_SMTP_PORT" in email_only.detail
-        display(render([email_only, both]))
+        # A key the manager really does read is demanded here, and only here.
+        needs = ManagerConfig(requires_env=["SLURM_AGENT_THING"])
+        assert keys_row(needs, {}).ok is False
+        assert keys_row(needs, {"SLURM_AGENT_THING": "x"}).ok
+        display(empty.detail)
 
 
 # %%
@@ -1143,7 +1114,7 @@ if test():
     # put an HF token in a file that nothing ever reads it from.
     with tempfile.TemporaryDirectory() as tmp:
         envrc = Path(tmp) / ".envrc"
-        envrc.write_text("SLURM_AGENT_SMTP_HOST=smtp.x\n")
+        envrc.write_text("SLURM_AGENT_TEST_KEY=smtp.x\n")
         envrc.chmod(0o600)
         hungry = {"experiment-runner": AgentConfig(
             repo="DeanLight/baselines", ref="main", workdir="~/work/baselines",
@@ -1171,7 +1142,7 @@ if test():
 if test():
     with tempfile.TemporaryDirectory() as tmp:
         envrc = Path(tmp) / ".envrc"
-        envrc.write_text("SLURM_AGENT_SMTP_HOST=smtp.x\n")
+        envrc.write_text("SLURM_AGENT_TEST_KEY=smtp.x\n")
         envrc.chmod(0o600)
 
         # ssh down: cluster rows are SKIPPED, not failed — one broken link must not read
@@ -1186,17 +1157,6 @@ if test():
         assert rows["reachable"].ok is False
         assert rows["run root"].ok is None
         display(render(list(rows.values())))
-
-        # --send really sends, and the two sends are attributed to the two machines they
-        # left from — the cluster-side one is the path every agent uses, and nothing on
-        # the laptop can stand in for it.
-        sent = healthcheck(cluster, manager, {}, FakeRunner({"id -un": "d\n", "test -d": "yes"}),
-                           envrc=envrc, env=good_env, send=True,
-                           notify_test=lambda: [("local", True, "delivered on email"),
-                                                ("cluster", True, "ok")])
-        sends = [c for c in sent if c.name == "notify send"]
-        assert {c.where for c in sends} == {LAPTOP, login_node(cluster)}
-        assert all(c.ok for c in sends)
 
 
 # %%

@@ -17,7 +17,7 @@ uv sync --all-groups && poe hooks && poe init
 
 Then run **[docs/quickstart.ipynb](docs/quickstart.py)** once on the new machine
 (`poe nb` pairs it first). It does setup and nothing else: `init`, fill `.envrc`,
-`hc --full --send`, and it stops. Commit it with its outputs — they are the proof this
+`hc --full`, and it stops. Commit it with its outputs — they are the proof this
 clone works.
 
 After that you never touch a `poe` command again — you talk to the manager, and a task id
@@ -66,7 +66,7 @@ loop you can stop and restart at will.
 
 | Command | What it does |
 |---|---|
-| `poe init` | Create the local footprint, then prove it works by really sending |
+| `poe init` | Create the local footprint, then prove it works |
 | `poe healthcheck` / `poe hc` | Verify. Fast by default; `--full` adds the slow proofs |
 | `poe job-up NAME` | Bring up an allocation, or reattach to the live one |
 | `poe job-status` | Every allocation of mine |
@@ -81,7 +81,7 @@ loop you can stop and restart at will.
 | `poe agent-continue S` | A fresh lease on the same notebook |
 | `poe status` | Running, queued, completed, failed |
 | `poe flush` | Drop finished runs from `status` |
-| `poe notify-test` | Really send, from here and from the cluster |
+| `poe spend` | What the scheduled polls recorded about cost |
 | `poe monitor-*` | The change-gated usage digest and its schedule |
 | `poe session-new NAME --into DIR` | Scaffold a session notebook in the repo it is about |
 
@@ -96,6 +96,17 @@ detector for a stuck agent must not depend on the stuck agent's own account.
 
 **Rules kill; you renew.** Renewing means reading the notebook first, which no threshold
 can do.
+
+## How it reaches you
+
+It does not. There is no email, no Slack webhook, no sender to configure — the manager is
+a Claude Code session you are already talking to, so it tells you. Start it with `claude
+--remote-control` and that conversation is also at claude.ai/code and in the Claude app,
+while Claude keeps running on this laptop, the only machine that reaches Tillicum.
+
+The scheduled usage poll appends to `usage.jsonl` under the run root **on the cluster**;
+`poe spend` reads it back, and the manager reads that. A cron entry has nobody to talk to;
+the manager does.
 
 ## What it never does
 

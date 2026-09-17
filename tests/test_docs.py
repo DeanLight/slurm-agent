@@ -11,7 +11,6 @@ from pathlib import Path
 
 from slurm_agent import preflight
 from slurm_agent.config import AgentConfig, ClusterConfig, ManagerConfig
-from slurm_agent.notify import NotifyConfig
 from tests.conftest import FakeRunner
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -19,7 +18,7 @@ QUICKSTART = (ROOT / "docs" / "quickstart.py").read_text()
 
 # Every row name the quick start cites. Adding a row is free; renaming one must either
 # update the doc or fail here.
-CITED = ["reachable", "my keys", "notify send", "agent credential", "allocation probe",
+CITED = ["reachable", "my keys", "agent credential", "allocation probe",
          "ssh config", ".envrc", "run root", "clone", "worktree", "tmux",
          "claude auth", "mcp notion", "mcp github"]
 
@@ -38,12 +37,11 @@ def _every_row() -> list[preflight.Check]:
     })
     return preflight.healthcheck(
         ClusterConfig(login_host="h"), ManagerConfig(), {"k": agent}, runner,
-        full=True, send=True, envrc=ROOT / "templates" / "envrc.example",
-        env={"SLURM_AGENT_SMTP_HOST": "s"}, ssh_dir=ROOT / "ssh_config_templates",
-        notify=NotifyConfig(channels=["email"]), local=runner,
+        full=True, envrc=ROOT / "templates" / "envrc.example",
+        env={"SLURM_AGENT_TEST_KEY": "s"}, ssh_dir=ROOT / "ssh_config_templates",
+        local=runner,
         tasks=__import__("slurm_agent.tasks", fromlist=["TaskConfig"]).TaskConfig(
-            data_source="collection://abc"),
-        notify_test=lambda: [("local", True, "sent"), ("cluster", True, "sent")])
+            data_source="collection://abc"))
 
 
 def test_the_quick_start_only_names_rows_that_exist():
@@ -131,7 +129,7 @@ def test_the_quick_start_shows_commands_rather_than_running_them_for_you():
 
     # Setup is init, then hc until green. Nothing else is run for you.
     assert "# !uv run poe init" in src
-    assert "# !uv run poe hc --full --send" in src
+    assert "# !uv run poe hc --full" in src
     # And the work is two bash blocks you paste, not cells you edit first.
     assert src.count('# %% language="bash"') == 2
     for command in ("poe job-up", "poe agent-run", "poe agent-batch", "poe agent-watch",

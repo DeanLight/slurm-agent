@@ -21,7 +21,7 @@
 # set the repo up, and again whenever you doubt it.
 #
 # 1. `poe init` — create the local footprint and report on everything
-# 2. `poe hc --full --send` — until it is green
+# 2. `poe hc --full` — until it is green
 # 3. talk to Claude
 #
 # Step 3 is the whole point. You do not bring up allocations, launch agents or poll them;
@@ -49,7 +49,7 @@
 #
 # | Place | What lives there | What its `.envrc` holds |
 # |---|---|---|
-# | **This laptop** | this checkout, `~/.ssh/config`, the manager | the keys for **reaching you** — whatever `config/notify.yaml`'s channels need |
+# | **This laptop** | this checkout, `~/.ssh/config`, the manager | nothing, in the shipped repo — `config/manager.yaml` declares no keys |
 # | **The login node** | the run root, `tmux`, a Claude credential, a git credential | nothing — no `.envrc` here |
 # | **Each staged repo on the cluster** | the repo one agent runs in | the keys **that agent** declares |
 #
@@ -59,9 +59,9 @@
 #
 # ## What it costs
 #
-# A few cents. `hc --full` makes one real Claude call on each machine, opens a one-minute
-# allocation to prove it survives the ssh closing, and reads your Notion Tasks database.
-# Nothing here runs an agent.
+# A few cents. `hc --full` makes one real Claude call per machine plus one per MCP server
+# per machine, opens a one-minute allocation to prove it survives the ssh closing, and
+# reads your Notion Tasks database. Nothing here runs an agent.
 
 # %% [markdown]
 # ### Run from the repo root
@@ -107,11 +107,11 @@ print(pathlib.Path.cwd())
 #   gh auth login          #   or put a PAT in git's credential store
 # ```
 #
-# Only the keys the report lists under `this laptop` are yours to fill in here — the ones
-# the channels you turned on need. `config/notify.yaml` ships `channels: [email]`, so
-# Slack's webhook is not required until you add `slack` to that list. Anything written
-# **commented out** belongs to a staged repo on the cluster; filling it in here changes
-# nothing.
+# Only the keys the report lists under `this laptop` are yours to fill in here — and in a
+# fresh clone there are none, so `.envrc` is all comments and `my keys` is green with
+# nothing to do. The manager reaches you by talking to you, so it holds no credential for
+# that. Anything written **commented out** belongs to a staged repo on the cluster;
+# filling it in here changes nothing.
 #
 # Claude itself is checked on both machines, and in two separate ways, because they fail
 # separately. `claude auth` is free and instant and says only whether you are logged in.
@@ -127,11 +127,11 @@ print(pathlib.Path.cwd())
 # names a database that exists. If you have used Notion and GitHub from Claude Code on a
 # machine they are already authorised; if not, run `claude` there once and approve them.
 #
-# Then re-run until green. `hc` alone is the fast tier; `--full` adds the slow proofs and
-# `--send` really delivers a test message from **both** machines.
+# Then re-run until green. `hc` alone is the fast tier — seconds, no tokens, no GPU —
+# and `--full` adds the slow proofs.
 
 # %%
-# !uv run poe hc --full --send
+# !uv run poe hc --full
 
 # %% [markdown]
 # A `SKIPPED` row is never a pass — if the login node is unreachable, everything behind it
@@ -155,7 +155,7 @@ print(pathlib.Path.cwd())
 # So the normal way to work is a terminal, in this directory:
 #
 # ```bash
-# cd ~/src/slurm-agent && claude
+# cd ~/src/slurm-agent && claude --remote-control "Tillicum manager"
 # > Pick up TASK-118 on Tillicum. Keep me posted on progress and spend.
 # ```
 #
@@ -163,6 +163,40 @@ print(pathlib.Path.cwd())
 # works out what the task asks for and which repo it is in, sizes the compute, writes the
 # agent config, launches onto Tillicum, supervises, and reports back. You never name an
 # allocation or a workdir.
+#
+# `--remote-control` is the flag worth typing every time, and it is why **this repo sends
+# no email and has no Slack webhook**. The session also appears at claude.ai/code and in
+# the Claude app, so a run you started at your desk is one you can read on the couch and
+# steer from there. Claude keeps running on *this laptop* — which matters, because it is
+# the only machine on a network that reaches Tillicum.
+#
+# Three things it does not do:
+#
+# * **It is interactive-only.** A `claude -p` prints and exits, so the pasted blocks below
+#   stay invisible to the console. This is the reason to work as a conversation.
+# * **It does not follow the agents.** They run headless on a compute node; ask the manager
+#   about them — it is the one supervising them, and it reads their notebooks in place.
+# * **The repo cannot turn it on for you.** Claude Code ignores `remoteControlAtStartup:
+#   true` in a checked-in `.claude/settings.json` on purpose, so a clone can never put
+#   someone's session in someone else's account. Set it in **your** `~/.claude/settings.json`
+#   to have every session do it, or type the flag.
+#
+# It needs a Pro, Max, Team or Enterprise login (not an API key), and `ANTHROPIC_BASE_URL`
+# unset or pointing at `api.anthropic.com`.
+#
+# ### Nothing pushes to you, and nothing needs to
+#
+# There is no notifier here, and `.envrc` holds no SMTP or Slack key, because a second
+# channel would mean a supervision decision could arrive by email while the session that
+# made it said nothing. The manager is the channel:
+#
+# * A threshold firing comes back as a `NEEDS YOU` line out of `poe agent-watch`, which the
+#   manager reads and tells you about.
+# * Cost accumulated while nobody was looking is in `poe spend`, which reads a ledger the
+#   scheduled poll appends to **on the cluster** — so it survives a closed laptop and two
+#   sessions agree about it. `poe monitor-install` puts that poll on a schedule.
+#
+# Ask "what has this cost so far" and the manager answers from both.
 
 # %% [markdown]
 # ### The same thing from here, as bash you can paste
@@ -206,41 +240,13 @@ print(pathlib.Path.cwd())
 # claude -p 'How are my Tillicum runs going, and what have they cost so far?'
 
 # %% [markdown]
-# For a long run you would rather watch than poll, drop the `-p` and talk to it:
-#
-# ```bash
-# cd ~/src/slurm-agent && claude
-# > Pick up TASK-118 on Tillicum. Keep me posted on progress and spend.
-# ```
-#
-# ### Watching the manager from your phone
-#
-# Add `--remote-control` and the manager session also appears in the session list at
-# claude.ai/code and in the Claude app, where you can read the whole conversation and steer
-# it — a twelve-hour run is exactly the case it is for.
+# For a long run you would rather watch than poll, drop the `-p` and talk to it — which is
+# also the only form that reaches your phone:
 #
 # ```bash
 # cd ~/src/slurm-agent && claude --remote-control "Tillicum manager"
+# > Pick up TASK-118 on Tillicum. Keep me posted on progress and spend.
 # ```
-#
-# Claude keeps running **on your laptop**: it is the same session, mirrored, making outbound
-# HTTPS only. Which matters here, because the laptop is the only machine on the network that
-# reaches Tillicum, and this does not change that.
-#
-# Three things it does not do:
-#
-# * **It is interactive-only.** A `claude -p` prints and exits, so the pasted blocks above
-#   stay invisible to the console. This is the reason to run the manager as a conversation.
-# * **It does not follow the agents.** They run headless on a compute node; what they did is
-#   on the cluster, and `poe agent-logs` reads it in place. Ask the manager instead — it is
-#   the one supervising them.
-# * **The repo cannot turn it on for you.** Claude Code ignores `remoteControlAtStartup: true`
-#   in a checked-in `.claude/settings.json` on purpose, so a clone can never put someone's
-#   session in someone else's account. Set it in **your** `~/.claude/settings.json`, or type
-#   the flag.
-#
-# It needs a Pro, Max, Team or Enterprise login (not an API key), and `ANTHROPIC_BASE_URL`
-# unset or pointing at `api.anthropic.com`.
 #
 # When the work is done the durable record is the Notion row — each agent writes its own
 # findings there — and the allocation is gone, because the manager drops it. Nothing is left
@@ -256,8 +262,7 @@ print(pathlib.Path.cwd())
 # |---|---|
 # | The local footprint is real | `.envrc` at 0600 and `ssh config`, each with a `·` note saying what `init` did |
 # | ssh reaches the login node | `reachable` |
-# | Every key a live channel needs is filled | `my keys`, which demands only what `config/notify.yaml` turns on |
-# | You can be reached | `notify send` under **both** headings — `--send` really delivered from each |
+# | Every key this laptop reads is filled | `my keys` — which in a fresh clone demands none |
 # | Git can reach the repo from both machines | the `github …` rows, one per heading |
 # | It can **push**, not just read | `github … push`, from `hc --full`'s `--dry-run` probe |
 # | Claude is logged in on **both** machines | `claude auth`, under each heading — free, so it is in the fast tier |
@@ -287,8 +292,7 @@ print(pathlib.Path.cwd())
 # | A command hangs | The authenticated ssh session died. Re-open it; re-run. |
 # | `reachable` MISSING, `not authenticated` | Open a terminal, `ssh tillicum-login`, answer 2FA, leave it open. |
 # | Everything behind it `SKIPPED` | That is the point: one broken link, not eight problems. A skip is never a pass. |
-# | `my keys` MISSING | Fill them in *this laptop's* `.envrc`. It only asks for the channels you turned on. |
-# | `notify send` MISSING under the login node | The cluster could not send — a different egress path from your laptop's. |
+# | `my keys` MISSING | Fill them in *this laptop's* `.envrc`. It only asks for what `config/manager.yaml` declares. |
 # | `claude auth` MISSING | Run `claude auth login` on that machine. |
 # | `agent credential` MISSING | Logged in, but the headless call failed or reported no cost. Run `claude` there once. |
 # | `mcp github` MISSING | Run `claude` on that machine and authorise the GitHub MCP server. |

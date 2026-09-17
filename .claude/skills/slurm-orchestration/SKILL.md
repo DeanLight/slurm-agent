@@ -41,14 +41,17 @@ them — it needs secrets and an interactive 2FA login. Point them at
 ## 1. Prove both machines can work — `poe hc --full`
 
 ```bash
-poe hc --full          # add --send the first time on a machine, or after changing channels
+poe hc --full          # the first time on a machine, and after any re-auth
 ```
 
 This is not a formality; it is the step that stops you spending an allocation on work that
-cannot finish. Four things it proves that you would otherwise discover expensively:
+cannot finish. Five things it proves that you would otherwise discover expensively:
 
 - **Claude is authenticated on both machines.** You are proof of the laptop's; the login
   node's is a separate credential, and an agent without it dies at launch.
+- **Each MCP server is authorised on both machines** — Notion and GitHub, one row each.
+  A separate grant that expires separately: you can be logged in to Claude and still have
+  an agent that cannot read its task or write its findings back.
 - **Git is authenticated on both machines**, with a `--dry-run` push that proves *write*,
   not just read. `ls-remote` succeeds on a public repo with no credential at all.
 - **An allocation outlives the ssh that asked for it** — every lease depends on it.
@@ -241,6 +244,7 @@ poe agent-status              # one line per live agent, with what each is waiti
 poe agent-logs <session> --cells
 poe agent-watch --once        # one supervision pass: poll, decide, act, log
 poe status                    # running / queued / completed / failed, with spend
+poe spend                     # what the scheduled polls recorded about cost
 ```
 
 Poll every minute or two rather than continuously; each poll is an ssh round trip. Two
@@ -262,6 +266,20 @@ has cost so far, and whether anything needs them. Something like:
 
 Say it when something changes, not on a timer. An agent waiting at `needs_human` is the one
 case to raise immediately, because the meter is stopped and only they can unblock it.
+
+**You are the only channel, and that is deliberate.** Nothing in this repo sends email or
+posts to Slack; there is no sender left to configure. A supervision threshold firing comes
+back to you as a `NEEDS YOU` line out of `poe agent-watch`, and cost recorded while nobody
+was looking is in `poe spend` — read both and say it yourself. If the human wants this on
+their phone they start you with `claude --remote-control`, which mirrors this conversation
+to claude.ai and the Claude app; the session is still running on their laptop, so it
+changes nothing about how you work. It does mean a long run is worth an occasional
+unprompted line: they may be reading it from somewhere else.
+
+`poe spend` is the answer to "what has this cost so far" when the question spans days. It
+reads the ledger the scheduled poll appends to on the cluster — every reading, and which
+of them had news — so it can tell "spend has not moved" apart from "nobody has looked".
+`poe status` is the live picture; `poe spend` is the history.
 
 `agent-watch` kills on named thresholds and **proposes** renewals rather than taking them.
 Renewing means reading the notebook first, which is judgement, not a rule. Nothing is lost

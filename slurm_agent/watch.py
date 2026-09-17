@@ -319,10 +319,9 @@ def act(decision: Decision, view: AgentView, run: Runner, cluster: ClusterConfig
     if decision.action == "escalate":
         key = (view.session_id, decision.detail)
         if key in notified:
-            return f"{tag} escalate (already sent) {decision.detail}"
+            return f"{tag} escalate (already raised) {decision.detail}"
         notified.add(key)
-        _escalate(view, decision, cluster)
-        return f"{tag} ESCALATE {decision.detail}"
+        return _escalate(view, decision, cluster)
 
     if decision.action == "renew":
         if not auto_renew:
@@ -337,19 +336,19 @@ def act(decision: Decision, view: AgentView, run: Runner, cluster: ClusterConfig
     return f"{tag} ok · {decision.detail}"
 
 
-def _escalate(view: AgentView, decision: Decision, cluster: ClusterConfig) -> None:
-    """Tell the human. Never lets a notification failure take the loop down with it."""
-    try:
-        from slurm_agent.config import ManagerConfig, declared_env_keys, load
-        from slurm_agent.notify import NotifyConfig, notify, secret_keys
+def _escalate(view: AgentView, decision: Decision, cluster: ClusterConfig) -> str:
+    """Say it where the manager will see it, which is the loop's own output.
 
-        cfg = load("config/notify.yaml", NotifyConfig)
-        keys = secret_keys(declared_env_keys(load("config/manager.yaml", ManagerConfig), []))
-        notify(f"[slurm-agent] {view.task} needs you", 
-               f"{decision.detail}\nsession {view.session_id}\nrun dir {view.run_dir}\n",
-               cfg, keys)
-    except Exception as exc:  # noqa: BLE001 - a broken channel must not stop supervision
-        log.error("watch.escalate_failed", session=view.session_id, error=str(exc))
+    There is no sender here on purpose. The manager runs this loop and is the one in a
+    conversation with the human — a second channel would mean a supervision decision could
+    arrive by email while the session that made it said nothing, and the two would
+    disagree about what happened. Escalating IS the line the loop returns.
+    """
+    line = (f"NEEDS YOU  {view.task}  {decision.detail}  "
+            f"session {view.session_id}  run dir {view.run_dir}")
+    log.warning("watch.escalate", session=view.session_id, task=view.task,
+                detail=decision.detail, run_dir=view.run_dir)
+    return line
 
 
 def kill_step(view: AgentView, run: Runner, *, reason: str) -> str:
