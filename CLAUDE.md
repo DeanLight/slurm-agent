@@ -124,6 +124,11 @@ an agent. That rule is what makes a closed laptop lossless and two sessions agre
   `poe` pre-approved, `.envrc` denied). Anything a manager session needs goes in those, so
   that what a human types and what a script runs are the same command. A wrapper that
   configured the session would work while a bare `claude` quietly did not.
+  `poe claude-manage` is the one launcher, and it is not that: it adds only what cannot be
+  checked in — the Remote Control name, and `--continue`, because `--remote-control <name>`
+  names the remote link and resumes nothing, so the same name typed twice is two empty
+  conversations. Delete it and the manager still comes up correctly; that is the test of
+  whether a launcher is allowed to exist here.
 - **A reply is stdout and nothing else.** `IDS=$(claude -p "…")` is the contract that lets
   one session feed the next — `--output-format` defaults to `text` under `-p` — so logs go
   to stderr repo-wide. A log line captured into that variable does not fail; it asks the

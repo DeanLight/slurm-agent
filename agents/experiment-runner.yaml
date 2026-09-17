@@ -37,6 +37,9 @@ allowed_tools:
   - "Bash(uv run *)"
   - "Bash(juplit *)"
   - "Bash(git *)"
+  # The brief has it open a PR against the ref it staged; without this the last step of
+  # every run is a refusal.
+  - "Bash(gh *)"
   - "Bash(sbatch *)"
   - "Bash(squeue *)"
   - "Bash(python3 *)"

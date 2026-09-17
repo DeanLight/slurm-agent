@@ -70,11 +70,35 @@ the log directory, so you never need to report that.
 - The supervisor kills runs that stop making progress, are blocked on a human, or leave a
   GPU idle. That is not a punishment — a stopped run costs nothing and resumes for free.
 
+## Your branch, and the pull request
+
+`{{ ref }}` is what you **branched from**, not what you commit to. Before your first commit:
+
+```
+git checkout -b {{ ref }}-{{ task|lower }}
+```
+
+You may be sharing this allocation with another agent working on the same base ref. If you
+commit to `{{ ref }}` itself, you are racing them on `git push` and your two unrelated tasks
+arrive mixed into one pull request. The branch above cannot collide, because a task id
+cannot.
+
 ## When you finish
 
-1. Commit the notebook **with its outputs** and push.
-2. **Update {{ task }} in Notion**: what you found, in a sentence or two, and where the
-   notebook is. That row is how a human sees this run happened at all — the manager reports
-   progress, but the task is the durable record.
-3. If the task's repo has a PR for this work, announce it there too.
+1. Commit the notebook **with its outputs** on your task branch, push it with
+   `git push -u origin {{ ref }}-{{ task|lower }}`, and open a pull request against
+   `{{ ref }}`:
+
+   ```
+   gh pr create --base {{ ref }} --head {{ ref }}-{{ task|lower }} \
+     --title "{{ task }}: <what you did>" --body "<what you found, and where the notebook is>"
+   ```
+
+   `gh` is installed and authenticated on this cluster. If it is not, say so with
+   `needs_human` rather than leaving the work on an unreviewed branch.
+2. **State the PR URL in your final message.** The manager reads that message to report to
+   the human, so a PR you opened but did not name is one nobody can find.
+3. **Update {{ task }} in Notion**: what you found, in a sentence or two, where the notebook
+   is, and the PR link in the row's `PR Link` property. That row is how a human sees this run
+   happened at all — the manager reports progress, but the task is the durable record.
 4. Then stop. Do not cancel the allocation: it is shared with other agents.

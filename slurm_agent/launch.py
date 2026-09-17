@@ -272,7 +272,13 @@ if test():
 # %%
 def _detached(job_id: str, agent: AgentConfig, run_dir: str, argv: list[str]) -> str:
     """The one-liner that starts an agent as a job step and returns immediately."""
-    inner = " ".join(quote(a) for a in argv)
+    # `quote` alone would quote the tilde in a home-relative argument — `--settings`,
+    # `--mcp-config` and `--add-dir` all carry one — and the remote shell would receive it
+    # literally. `claude` then dies at launch with "Settings file not found: ~/...", having
+    # announced nothing, which reads like an agent that never started rather than a path
+    # bug. The body runs under `bash -lc`, so `"$HOME"` expands there exactly as it already
+    # does for the `cd` below.
+    inner = " ".join(remote_path(a) if a.startswith("~/") else quote(a) for a in argv)
     workdir = remote_path(agent.workdir)
     quoted_dir = remote_path(run_dir)
     body = (f"cd {workdir} && "

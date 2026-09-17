@@ -28,9 +28,12 @@ Two standing obligations while any of it is live:
   changes — a task finishes, gets stuck, or costs more than you expected — say what
   happened, how far along things are, and what it has cost. Do not paste raw `poe` output
   at them and call that a report.
-- **Never send them to a pull request.** Agents' notebooks are read in place with
-  `poe agent-logs --cells` and summarised by you. Nothing needs to be pushed anywhere for
-  the work to be seen.
+- **Name the pull request, and never send them to it instead of reporting.** Every task's
+  work lands on its own branch as its own PR, and the report says which — "T2-132 → #47" is
+  a fact the human needs, because the PR is where the change is reviewed and merged. But the
+  link is an *addition* to your summary, never a substitute for it: you still read the run
+  in place with `poe agent-logs --cells` and say what it found in your own words. "It's
+  done, see the PR" is the job handed back.
 
 ## 0. Is the machine set up at all?
 
@@ -168,8 +171,14 @@ What ships, and when to reach for each:
 
 Copy `experiment-runner.yaml` and fill in, at minimum:
 
-- `repo` and `ref` — the repo and branch the task belongs to. The branch must already
-  exist; a launch clones it by name.
+- `repo` and `ref` — the repo and the **base** branch the task belongs to. The branch must
+  already exist; a launch clones it by name. This is what the agent branches *from*, not
+  what it commits to: its work goes on a branch of its own, named for the task, and comes
+  back as a PR against this ref.
+- `allowed_tools` — must include `"Bash(gh *)"` if the agent is to open its own PR, and
+  enough of `ls`/`cat`/`grep`/`find` to read the tree it landed in. An agent that cannot
+  run `ls` spends its budget discovering that, which is a launch wasted on a typo in this
+  list.
 - `workdir` — `~/work/<something unique>`. **Two tasks running at once need two configs
   with different workdirs.** `stage()` runs `git fetch` and `checkout --detach` there, and
   two launches racing in one checkout is the failure that looks like a cluster problem for
@@ -186,6 +195,28 @@ Copy `experiment-runner.yaml` and fill in, at minimum:
 Say what you wrote, and what it will cost, before you launch it. A config is the audit
 surface: it is how the human sees what an agent was allowed to do.
 
+### One task, one branch, one PR
+
+**An agent never commits to the ref it staged.** It cuts a branch from it, named for the
+task, and opens a pull request against that ref when it is done. The shipped brief says so;
+a brief you write must too.
+
+This is not bookkeeping — it is the same rule as separate workdirs, one level up. Two agents
+launched onto one shared branch race on `git push`: the loser rebases if it is careful and
+force-pushes over its neighbour if it is not, and both tasks arrive mixed into whatever PR
+that branch already had. T2-132 and T2-133 landed that way, two unrelated changes in one
+open PR, and the only reason it was harmless is that they touched different files.
+
+So:
+
+- The **base ref** (`ref:` in the config) is what the agent branches from and targets.
+- The **task branch** is the agent's alone. `<base>-<task-id-lowercased>` is a name that
+  cannot collide, because a task id cannot.
+- `gh` is installed and authenticated on the login node, so the agent opens the PR itself.
+  Check it with `gh auth status` over ssh if a run comes back saying it could not.
+- **Report the PR number for every task**, and set it on the task's `PR Link` property in
+  Notion. A run whose PR you cannot name is a run the human cannot review.
+
 ### The agent is not where you are
 
 You are on the laptop. The agent runs on a **Tillicum compute node**, in a checkout it did
@@ -199,7 +230,7 @@ at `$SLURM_AGENT_RUN_DIR`. **If you write a new brief, it must do the same.** An
 thinks it is on a laptop will try to open files that are not there, run `poe` commands that
 belong to the control plane, or push from a machine you never checked.
 
-Two specifics worth stating in any brief you write:
+Three specifics worth stating in any brief you write:
 
 - **Where its output goes.** A path relative to the workdir means "commit it into the repo";
   `{RUN_DIR}/…` means "leave it beside the launch record", which is right for anything that
@@ -207,6 +238,9 @@ Two specifics worth stating in any brief you write:
 - **How to say it is stuck.** `python3 $SLURM_AGENT_RUN_DIR/remote_status.py needs_human
   --waiting-on "…"` stops the meter. An agent that retries instead burns its budget on a
   problem only the human can fix.
+- **That it branches and opens a PR**, targeting the ref it staged, and states the PR URL in
+  its final message. That last part matters more than it looks: the manager reads that
+  message to report, so a PR the agent opened but never named is one you cannot pass on.
 
 ## 5. Launch, one command per task
 
@@ -255,14 +289,20 @@ things and stops writing is stuck. A run that only stops saying things is not.
 When an agent reaches its last round, read its notebook with `poe agent-logs --cells` —
 summarised on the login node, so a 4 MB notebook costs a few hundred tokens and never
 crosses to the laptop — and **tell the human what it found**, in your own words, with the
-cost. That report is the deliverable. Do not tell them to go and look at a PR.
+cost and the PR it opened. That report is the deliverable; the PR link travels with it, and
+never replaces it. "It's done, see #47" is the job handed back.
+
+Verify the PR rather than repeating what the agent claimed — `gh pr list --repo <repo>
+--head <branch>`, or `gh api repos/<repo>/commits/<sha>/pulls`. An agent that pushed to a
+branch some *other* PR already tracks will report a success that is really a collision, and
+that is exactly what the per-task branch above exists to prevent.
 
 A useful update is short and says four things: which task, how far (`round n/m`), what it
 has cost so far, and whether anything needs them. Something like:
 
 > TRIAL-A is on round 2 of 3, ~4 min in, $0.31 of its $1 cap. TRIAL-B finished: it wrote
-> `smoke.ipynb` confirming an H200 with 143 GB. Allocation `dev` has 51 min left and has
-> cost about $0.60 of GPU time. Nothing needs you.
+> `smoke.ipynb` confirming an H200 with 143 GB, and opened #47. Allocation `dev` has 51 min
+> left and has cost about $0.60 of GPU time. Nothing needs you.
 
 Say it when something changes, not on a timer. An agent waiting at `needs_human` is the one
 case to raise immediately, because the meter is stopped and only they can unblock it.

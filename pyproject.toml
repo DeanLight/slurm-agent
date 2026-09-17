@@ -56,6 +56,40 @@ docs         = {cmd = "mkdocs serve", help = "Serve docs locally for preview"}
 docs-build   = {cmd = "mkdocs build", help = "Build docs site"}
 docs-deploy  = {cmd = "mkdocs gh-deploy --force", help = "Deploy docs to GitHub Pages"}
 
+# ── the manager session ─────────────────────────────────────────────────────────
+# Starts the manager with Remote Control on and the previous conversation resumed.
+#
+# This task configures NOTHING. `CLAUDE.md`, the skill, `.mcp.json` and
+# `.claude/settings.json` are what make a session in this directory the manager, and a bare
+# `claude` here is still exactly that — which is the property that stopped the last wrapper
+# from being worth keeping. What this adds is the two things that live on the command line
+# and cannot be checked in: the Remote Control name, and resume.
+#
+# Resume is not implied by `--remote-control`. That flag starts an interactive session with
+# Remote Control enabled and optionally names the remote link; the name is not a
+# conversation identity, so typing the same one tomorrow gives you a second, empty
+# conversation next to yesterday's. `--continue` is what resumes, and it fails outright when
+# there is nothing to continue — hence the check rather than the flag on its own.
+#
+# The transcript directory is Claude Code's, addressed by its own slugged-path convention.
+# If that guess ever misses, the fallback is a fresh session: a lost resume, never a failed
+# launch.
+claude-manage = {shell = """
+name="${SLURM_AGENT_MANAGER_SESSION:-Tillicum manager}"
+transcripts="$HOME/.claude/projects/$(pwd | sed 's|/|-|g')"
+if [ -n "${SLURM_AGENT_MANAGER_FRESH:-}" ]; then
+  echo "starting a fresh manager conversation (SLURM_AGENT_MANAGER_FRESH set)" >&2
+  exec claude --remote-control "$name"
+elif ls "$transcripts"/*.jsonl >/dev/null 2>&1; then
+  echo "resuming the most recent manager conversation in this directory" >&2
+  exec claude --continue --remote-control "$name"
+else
+  echo "no previous conversation here — starting a fresh one" >&2
+  exec claude --remote-control "$name"
+fi
+""", help = "Start (or resume) the manager session, with Remote Control on"}
+manage       = {ref = "claude-manage", help = "Alias for claude-manage"}
+
 # ── setup ───────────────────────────────────────────────────────────────────────
 init         = {cmd = "slurm-agent init", help = "Create the local footprint, then run a full healthcheck"}
 healthcheck  = {cmd = "slurm-agent healthcheck", help = "Is everything wired and working? Fast by default"}
