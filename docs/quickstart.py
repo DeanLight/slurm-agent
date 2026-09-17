@@ -158,7 +158,7 @@ print(pathlib.Path.cwd())
 # So the normal way to work is a terminal, in this directory:
 #
 # ```bash
-# cd ~/src/slurm-agent && claude --remote-control "Tillicum manager"
+# cd ~/src/slurm-agent && poe manage
 # > Pick up TASK-118 on Tillicum. Keep me posted on progress and spend.
 # ```
 #
@@ -167,11 +167,22 @@ print(pathlib.Path.cwd())
 # agent config, launches onto Tillicum, supervises, and reports back. You never name an
 # allocation or a workdir.
 #
-# `--remote-control` is the flag worth typing every time, and it is why **this repo sends
-# no email and has no Slack webhook**. The session also appears at claude.ai/code and in
-# the Claude app, so a run you started at your desk is one you can read on the couch and
-# steer from there. Claude keeps running on *this laptop* — which matters, because it is
-# the only machine on a network that reaches Tillicum.
+# `poe manage` is `claude` with the two things that cannot be checked in, and nothing else:
+#
+# * **Remote Control, named.** The session also appears at claude.ai/code and in the Claude
+#   app, so a run you started at your desk is one you can read on the couch and steer from
+#   there. Claude keeps running on *this laptop* — which matters, because it is the only
+#   machine on a network that reaches Tillicum. This is why **this repo sends no email and
+#   has no Slack webhook**.
+# * **Your last conversation, resumed.** `--remote-control <name>` names the remote link,
+#   not the conversation, and resumes nothing — so the same name typed tomorrow would give
+#   you a second, empty session beside yesterday's. `poe manage` adds `--continue` when
+#   there is something here to continue, and starts fresh when there is not.
+#
+# It configures nothing. Delete the task and a bare `claude` in this directory still comes
+# up as the manager, because the four files above are what make it one. That is the test of
+# whether a launcher belongs here at all: `poe manage` saves you two flags, it does not hold
+# the session together.
 #
 # Three things it does not do:
 #
@@ -179,10 +190,11 @@ print(pathlib.Path.cwd())
 #   stay invisible to the console. This is the reason to work as a conversation.
 # * **It does not follow the agents.** They run headless on a compute node; ask the manager
 #   about them — it is the one supervising them, and it reads their notebooks in place.
-# * **The repo cannot turn it on for you.** Claude Code ignores `remoteControlAtStartup:
-#   true` in a checked-in `.claude/settings.json` on purpose, so a clone can never put
-#   someone's session in someone else's account. Set it in **your** `~/.claude/settings.json`
-#   to have every session do it, or type the flag.
+# * **The repo cannot turn it on behind your back.** Claude Code ignores
+#   `remoteControlAtStartup: true` in a checked-in `.claude/settings.json` on purpose, so a
+#   clone can never put someone's session in someone else's account. `poe manage` is the
+#   allowed version of that: a command you type, passing the flag for you. Set it in
+#   **your** `~/.claude/settings.json` to have every session do it instead.
 #
 # It needs a Pro, Max, Team or Enterprise login (not an API key), and `ANTHROPIC_BASE_URL`
 # unset or pointing at `api.anthropic.com`.
@@ -247,9 +259,13 @@ print(pathlib.Path.cwd())
 # also the only form that reaches your phone:
 #
 # ```bash
-# cd ~/src/slurm-agent && claude --remote-control "Tillicum manager"
+# cd ~/src/slurm-agent && poe manage
 # > Pick up TASK-118 on Tillicum. Keep me posted on progress and spend.
 # ```
+#
+# Come back to it the same way. `poe manage` resumes the conversation that is already
+# supervising those runs rather than opening an empty one beside it, so "how are they
+# going?" is a question the session can already answer.
 #
 # When the work is done the durable record is the Notion row — each agent writes its own
 # findings there — and the allocation is gone, because the manager drops it. Nothing is left
