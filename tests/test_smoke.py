@@ -239,3 +239,34 @@ def test_manage_opens_a_conversation_and_p_prints_one(cluster):
     # interactive-only, and the prompt is ONE argv element with no shell in between.
     assert "-p" in printed and "--remote-control" not in printed
     assert printed[-1] == "how are my runs going?"
+
+
+def test_manage_reaches_a_manager_that_lives_on_another_machine(cluster, monkeypatch):
+    """With a host set, `poe manage` becomes the hop — same command, same conversation.
+
+    And `poe hc` refuses rather than describing the laptop it happens to be on, which is
+    this repo's oldest bug in a new place: a report whose heading names the wrong machine.
+    """
+    from slurm_agent.config import ManagerConfig
+
+    monkeypatch.setattr(cli, "_manager", lambda: ManagerConfig(host="barb"))
+    cluster.execs.clear()
+
+    for argv in (["manage"], ["manage", "--shell"]):
+        try:
+            cli.app(argv)
+        except SystemExit:
+            pass
+
+    session, shell = cluster.execs
+    assert session[:3] == ["mosh", "barb", "--"] and "tmux" in session
+    # `-As` is one command for "start it" and "come back to it", and `--here` on the far
+    # side is what stops the hop recursing.
+    assert "new -As manager" in " ".join(session)
+    assert "poe manage --here" in session[-1]
+    # `--shell` is the same session with nothing started: how you restart it, or run `hc`.
+    assert "poe manage" not in shell[-1]
+
+    with pytest.raises(SystemExit) as refused:
+        cli.app(["healthcheck"])
+    assert "barb" in str(refused.value) and "poe manage --shell" in str(refused.value)

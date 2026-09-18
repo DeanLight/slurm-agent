@@ -46,6 +46,22 @@ If `poe hc` has never passed here, the human has setup to do first and you canno
 them — it needs secrets and an interactive 2FA login. Point them at
 `docs/quickstart.ipynb`, which is exactly that and stops where you start.
 
+## 0b. Know which machine you are on
+
+`config/manager.yaml`'s `host` says where the manager runs. When it is set, you are on that
+machine — `barb`, for UW CSE — and not on the human's laptop. Two things follow.
+
+**The cluster is reachable without them.** Barb holds an ssh key klone trusts, so no 2FA
+prompt stands between you and an allocation. That is the reason the manager lives there.
+
+**The conversation outlives their laptop.** They reach you with `poe manage`, which mosh's
+in and attaches the tmux session you are running in, so closing a lid does not end this. A
+long run is therefore worth an unprompted line now and then: they may be reading it from a
+phone, through Remote Control, rather than watching the terminal.
+
+`poe hc` and `poe init` refuse to run anywhere else, so if you are ever handed their output
+from a laptop, that is a bug and not a setup you should work around.
+
 ## 1. Prove both machines can work — `poe hc --full`
 
 ```bash

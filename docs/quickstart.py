@@ -143,6 +143,68 @@ print(pathlib.Path.cwd())
 # launch, not by setup.
 
 # %% [markdown]
+# ## 2b. Optional, and the one that stops you re-explaining yourself
+#
+# ### Put the manager on a machine that does not move
+#
+# Everything above set up *this* machine. If that is your laptop, the manager dies every
+# time the laptop does: close the lid in one building, open it in another, and you get a
+# fresh session that has never heard of the runs it launched — and the `--remote-control`
+# link on your phone goes dead with it.
+#
+# `config/manager.yaml` can put it somewhere that stays:
+#
+# ```yaml
+# host: barb                  # or recycle / bicycle / tricycle, the same hop
+# workdir: ~/src/slurm-agent  # where this repo is cloned THERE
+# tmux_session: manager
+# transport: mosh
+# ```
+#
+# **Why `barb`.** Not because it is always on — because its ssh key reaches klone *without
+# 2FA*. A manager on barb can reach Tillicum unattended; your laptop, which needs a human
+# to answer a push notification, never could. Barb is the CSE jump host, so you are already
+# allowed to be there.
+#
+# From then on `poe manage` means the same thing everywhere: mosh to barb, `tmux new -As
+# manager`, and you are in the conversation that is already supervising your runs.
+#
+# | It survives | Because |
+# |---|---|
+# | Your IP changing (new building, hotspot, a new cell tower) | **mosh**, which is why not plain ssh |
+# | mosh itself dying, and barb rebooting | **tmux**, which is why not mosh alone |
+# | You, closing the laptop | the session is not on the laptop |
+#
+# `tmux new -As` is one command for both "start it" and "come back to it" — it attaches if
+# the session is there and creates it if it is not. When it creates one, the manager runs
+# and then drops to a shell rather than the session dying with it, so the session is always
+# there to come back to.
+#
+# **Setting it up on barb**, once:
+#
+# ```bash
+# ssh-copy-id barb                 # from this laptop
+# ssh barb
+#   ssh-keygen -t ed25519          # then add this key to klone — no more 2FA from barb
+#   git clone <this repo> ~/src/slurm-agent
+#   cd ~/src/slurm-agent && uv sync --all-groups && poe init
+#   claude                         # log in, and approve the Notion and GitHub MCPs
+# ```
+#
+# That `poe init` and `poe hc` are being run **on barb on purpose**. Both describe the
+# machine they run on, so from the laptop they now refuse and tell you how to get there —
+# a green report about a machine that runs nothing is worse than no report.
+#
+# ```bash
+# poe manage --shell     # a prompt on barb, in the repo: restart the manager, run poe hc
+# poe manage             # the conversation itself
+# ```
+#
+# Needs `mosh` on both machines and UDP 60000–61000 open. Blocked? `transport: ssh` — the
+# same session, worse roaming. Prefer not to edit a committed file: put
+# `SLURM_AGENT_MANAGER_HOST=barb` in this laptop's `.envrc` instead.
+
+# %% [markdown]
 # ## 3. From here on, you only talk to Claude
 #
 # Setup is done. `claude` started **in this repo root** comes up as the manager — no

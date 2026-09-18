@@ -82,11 +82,34 @@ def _views():
 # ── the manager session ──────────────────────────────────────────────────────────
 @app.command
 def manage(prompt: str = "",
-           print_: Annotated[bool, cyclopts.Parameter(name=["-p", "--print"])] = False) -> None:
+           print_: Annotated[bool, cyclopts.Parameter(name=["-p", "--print"])] = False,
+           shell: bool = False, here: bool = False) -> None:
     """Talk to the manager: spin work up, ask how it is going, report what it cost."""
     from slurm_agent import manage as manager
 
-    manager.manage(prompt, headless=print_)
+    manager.manage(prompt, headless=print_, shell=shell, here=here, cfg=_manager())
+
+
+def _must_be_on_the_manager_host(what: str) -> None:
+    """`init` and `hc` describe the machine they run on, so they must run on the right one.
+
+    Checking a laptop and captioning it "the manager" is the failure this repo keeps coming
+    back to: a report that cannot say which machine it means. When the manager lives
+    elsewhere, the honest answer is one sentence saying how to get there — not a green
+    report about a machine that runs nothing.
+    """
+    from slurm_agent.manage import HOST_ENV, on_manager_host
+
+    cfg = _manager()
+    host = os.environ.get(HOST_ENV) or cfg.host
+    if on_manager_host(host):
+        return
+    raise SystemExit(
+        f"the manager lives on {host}, so `{what}` belongs there and would describe this "
+        f"machine instead.\n"
+        f"  poe manage --shell     a prompt on {host}, in {cfg.workdir}\n"
+        f"  poe manage             the conversation itself\n"
+        f"Set {HOST_ENV}= (empty) or `host: null` in config/manager.yaml to run here.")
 
 
 # ── setup ────────────────────────────────────────────────────────────────────────
@@ -95,6 +118,7 @@ def init() -> None:
     """Create the local footprint, then run a full healthcheck."""
     from slurm_agent import preflight
 
+    _must_be_on_the_manager_host("poe init")
     cluster, manager, agents = _cluster(), _manager(), _agents()
     run = _runner()
     # Create, then report ONCE. `init` returns notes rather than a report of its own,
@@ -110,6 +134,7 @@ def healthcheck(full: bool = False) -> None:
     """Is everything wired and working? Fast by default; `--full` adds the slow proofs."""
     from slurm_agent import preflight
 
+    _must_be_on_the_manager_host("poe hc")
     _report(preflight.healthcheck(_cluster(), _manager(), _agents(), _runner(),
                                   full=full, tasks=_task_config()))
 

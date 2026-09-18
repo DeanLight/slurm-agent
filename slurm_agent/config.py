@@ -138,9 +138,19 @@ class ManagerConfig(BaseModel):
     requires_env: list[str] = []
     envrc: Path = Path(".envrc")
 
+    # Where the manager itself runs. None means "right here". A hostname means the manager
+    # lives on that machine and this checkout is a way to reach it — see config/manager.yaml.
+    host: str | None = None
+    workdir: str = "~/src/slurm-agent"
+    tmux_session: str = "manager"
+    transport: Literal["mosh", "ssh"] = "mosh"
+
 
 # %%
 if test():
+    # Shipped: the manager runs here, which is what a fork gets and what the tests assume.
+    assert ManagerConfig().host is None
+
     manager = ManagerConfig(requires_env=["SLURM_AGENT_TEST_KEY"])
     assert manager.requires_env == ["SLURM_AGENT_TEST_KEY"]
     assert manager.envrc == Path(".envrc")

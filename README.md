@@ -93,6 +93,8 @@ loop you can stop and restart at will.
 | `poe agent-continue S` | A fresh lease on the same notebook |
 | `poe status` | Running, queued, completed, failed |
 | `poe flush` | Drop finished runs from `status` |
+| `poe manage` | Talk to the manager — hops to `manager.host` when it lives elsewhere |
+| `poe manage --shell` | A prompt on that host, for restarting it or running `poe hc` |
 | `poe spend` | What the scheduled polls recorded about cost |
 | `poe monitor-*` | The change-gated usage digest and its schedule |
 | `poe session-new NAME --into DIR` | Scaffold a session notebook in the repo it is about |
@@ -118,9 +120,15 @@ can do.
 ## How it reaches you
 
 It does not. There is no email, no Slack webhook, no sender to configure — the manager is
-a Claude Code session you are already talking to, so it tells you. Start it with `claude
---remote-control` and that conversation is also at claude.ai/code and in the Claude app,
-while Claude keeps running on this laptop, the only machine that reaches Tillicum.
+a Claude Code session you are already talking to, so it tells you. `poe manage` passes
+`--remote-control`, so that conversation is also at claude.ai/code and in the Claude app,
+while Claude itself keeps running on a machine of yours that can reach Tillicum.
+
+Which machine is `config/manager.yaml`'s `host`. Left unset it is this laptop, and the
+session dies when the laptop does. Set it to a host that stays up — for UW CSE, `barb`,
+whose ssh key reaches klone without 2FA — and `poe manage` from anywhere mosh's in and
+attaches the tmux session already supervising your runs. Moving between buildings stops
+being an event.
 
 The scheduled usage poll appends to `usage.jsonl` under the run root **on the cluster**;
 `poe spend` reads it back, and the manager reads that. A cron entry has nobody to talk to;
@@ -128,6 +136,6 @@ the manager does.
 
 ## What it never does
 
-Reach Tillicum from anywhere but this laptop. Push anything from the compute node back to
-you. Write secrets for you. Write its own files inside a repo it staged. Let the scheduled
+Reach Tillicum from anywhere but the manager host. Push anything from the compute node back
+to you. Write secrets for you. Write its own files inside a repo it staged. Let the scheduled
 monitor spend money.

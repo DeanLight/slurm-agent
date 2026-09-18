@@ -102,6 +102,10 @@ session-new       = {cmd = "slurm-agent session-new", help = "Scaffold a session
 # the script body on stdin, so the child's stdin is a pipe — `exec claude` inherits it,
 # finds no terminal, and silently gives you something that is not a conversation. A `cmd`
 # task inherits the real terminal on both ends.
+#
+# When `config/manager.yaml` names a `host`, the same command becomes the hop that reaches
+# it — mosh, then `tmux new -As` — so what you type does not change with where you are.
+# `--shell` gets you a prompt there instead, which is how you restart it or run `poe hc`.
 manage            = {cmd = "slurm-agent manage", help = "Talk to the manager: spin work up, ask how it is going, report the cost"}
 
 

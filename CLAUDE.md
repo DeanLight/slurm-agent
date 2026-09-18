@@ -25,10 +25,12 @@ not blocked, only its grounding. That failure is real and has happened on the cl
 
 ---
 
-A local Claude Code session brings up Tillicum allocations, stages repos, and launches and
+A Claude Code session brings up Tillicum allocations, stages repos, and launches and
 supervises Claude agents on the compute node. Tillicum sits behind UW 2FA on a network only
-the researcher's laptop is on, so **this repo only works from that laptop** — no sandbox,
-cloud session or CI runner can reach the cluster.
+the researcher's own machines reach, so **this repo only works from one of them** — no
+sandbox, cloud session or CI runner can reach the cluster. Which machine is
+`config/manager.yaml`'s `host`: the laptop by default, or a host that does not sleep and
+holds an ssh key klone already trusts.
 
 ## The one rule that shapes everything
 
@@ -54,8 +56,22 @@ an agent. That rule is what makes a closed laptop lossless and two sessions agre
   `.envrc` on each machine; `requires_env` is how a config says what it needs. `poe` loads
   `.envrc` for every task via `[tool.poe] envfile`, so there is no credentials reader here
   and no `direnv` dependency.
-- **Every message names one of three places.** *This laptop* (this checkout, `~/.ssh/config`,
-  the keys for reaching you), *the login node* (run root, tmux, the Claude credential), and
+- **The manager does not have to live on the laptop, and when it does not, the laptop is a
+  terminal.** `manager.host` names the machine it runs on — for UW CSE, `barb`. Then `poe
+  manage` anywhere means *reach the manager where it lives*: mosh to that host, `tmux new
+  -As` the one session holding it. Mosh survives your IP changing, tmux survives mosh
+  dying; neither alone gets you back to the same conversation, which is the thing that
+  matters — a manager that forgets the runs it launched every time you change buildings is
+  not supervising them. The reason barb is the right host is not that it is always on: it
+  is that **barb's ssh key reaches klone without 2FA**, so a manager there can reach
+  Tillicum unattended, which a laptop needing a human to answer a push notification never
+  could. `host: null` ships, because a committed config must not name a machine a fork
+  cannot reach — the same rule as the shipped agents. `init` and `hc` REFUSE when the
+  manager lives elsewhere, because both describe the machine they run on and a green report
+  about a machine that runs nothing is the oldest bug in this repo wearing a new hat.
+- **Every message names one of three places.** *This laptop* — or the manager host, when
+  there is one (this checkout, `~/.ssh/config`, the keys for reaching you), *the login
+  node* (run root, tmux, the Claude credential), and
   *each staged repo on the cluster* (the keys that agent declares). They do not share files
   and they do not share keys: `config/manager.yaml` is the laptop's, `agents/<kind>.yaml` is
   that repo's. A `Check` carries `where`, `render` groups by it, and a row that cannot say
