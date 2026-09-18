@@ -6,7 +6,7 @@
 #       extension: .py
 #       format_name: percent
 #       format_version: '1.3'
-#       jupytext_version: 1.16.0
+#       jupytext_version: 1.19.5
 #   kernelspec:
 #     display_name: Python 3
 #     language: python
@@ -125,18 +125,34 @@ if test():
 
 # %%
 class ManagerConfig(BaseModel):
-    """`config/manager.yaml` — the local session's own settings."""
+    """`config/manager.yaml` — the local session's own settings.
+
+    What a manager SESSION may do is not here: it is `.claude/settings.json` and
+    `.mcp.json` at the repo root, which is where Claude Code itself looks. Duplicating
+    them into YAML would be a second source of truth that only this repo's own code reads,
+    and an interactive `claude` from the root would quietly ignore it.
+    """
 
     model_config = ConfigDict(extra="forbid")
 
     requires_env: list[str] = []
     envrc: Path = Path(".envrc")
 
+    # Where the manager itself runs. None means "right here". A hostname means the manager
+    # lives on that machine and this checkout is a way to reach it — see config/manager.yaml.
+    host: str | None = None
+    workdir: str = "~/src/slurm-agent"
+    tmux_session: str = "manager"
+    transport: Literal["mosh", "ssh"] = "mosh"
+
 
 # %%
 if test():
-    manager = ManagerConfig(requires_env=["SLURM_AGENT_SMTP_PASSWORD"])
-    assert manager.requires_env == ["SLURM_AGENT_SMTP_PASSWORD"]
+    # Shipped: the manager runs here, which is what a fork gets and what the tests assume.
+    assert ManagerConfig().host is None
+
+    manager = ManagerConfig(requires_env=["SLURM_AGENT_TEST_KEY"])
+    assert manager.requires_env == ["SLURM_AGENT_TEST_KEY"]
     assert manager.envrc == Path(".envrc")
     display(manager.model_dump())
 
@@ -168,10 +184,19 @@ class AgentConfig(BaseModel):
     # limit is the plan's usage window, which the CLI does not expose.
     max_budget_usd: float
     mode: Literal["interactive", "batch"] = "interactive"
+    # How many GPUs this agent claims on a SHARED interactive allocation. `0` says it needs
+    # none of its own — a smoke run, a doc build, anything whose work is not on the device —
+    # and that is what lets several of them run as steps on one allocation instead of each
+    # waiting for a job of its own. A training agent leaves it at 1 (or more).
+    gpus: int = 1
     lease: str = "04:00:00"
     max_leases: int = 4
     batch_time: str = "12:00:00"
     model: str | None = None
+    # Which launch prompt in `prompts/` this agent gets. The default briefs an experiment
+    # agent; a cheap smoke agent wants a much smaller brief, and the difference belongs in
+    # the audit surface next to `allowed_tools` rather than buried in the launcher.
+    prompt: str = "agent_launch.md.jinja"
 
 
 # %%
@@ -186,6 +211,11 @@ if test():
     )
     assert agent.mode == "interactive"
     assert duration_seconds(agent.lease) == 14400
+    # Unstated, an agent gets the experiment brief — the old behaviour, unchanged.
+    assert agent.prompt == "agent_launch.md.jinja"
+    # …and claims a GPU, which is the safe default: an agent that needs one and says
+    # nothing must not be packed onto an allocation that has none left.
+    assert agent.gpus == 1
 
     try:
         AgentConfig(repo="x", ref="y", workdir="z", log_dir="d",
@@ -201,8 +231,9 @@ if test():
 # ## Supervision and monitoring
 #
 # `supervision.yaml` is what "stuck" means, written down, so a kill is a rule firing rather
-# than a judgement call. `monitor.yaml` carries cadence and thresholds only — channels and
-# recipients live in `notify.yaml`, because the digest is not the only sender.
+# than a judgement call. `monitor.yaml` carries cadence and thresholds only — there is
+# nowhere to send a digest, because the digest is written to the cluster and the manager
+# is what reads it out to you.
 
 # %%
 class SupervisionConfig(BaseModel):
@@ -220,7 +251,7 @@ class SupervisionConfig(BaseModel):
 
 
 class MonitorConfig(BaseModel):
-    """`config/monitor.yaml` — how often the usage digest speaks, and about what."""
+    """`config/monitor.yaml` — how often the usage digest is taken, and about what."""
 
     model_config = ConfigDict(extra="forbid")
 
@@ -256,6 +287,17 @@ def load(path: Path | str, model: type[T]) -> T:
             f"{path} not found — run `poe init` to create the local footprint"
         )
     return model.model_validate(yaml.safe_load(path.read_text()) or {})
+
+
+def load_agents(directory: Path | str = "agents") -> dict[str, AgentConfig]:
+    """Every `agents/<kind>.yaml`, keyed by its **kind** — the filename stem.
+
+    The kind is the answer to "which repos does this clone manage?": one file per agent,
+    and the file names the repo, the ref and the workdir it is staged into. Keeping the
+    stem alongside the config is what lets a report say `agents/experiment-runner.yaml`
+    rather than leaving you to guess which file to edit.
+    """
+    return {p.stem: load(p, AgentConfig) for p in sorted(Path(directory).glob("*.yaml"))}
 
 
 # %%
@@ -318,13 +360,13 @@ if test():
                           max_budget_usd=1, requires_env=["HF_TOKEN", "SHARED"])
     agent_b = AgentConfig(repo="b", ref="r", workdir="w", log_dir="d",
                           max_budget_usd=1, requires_env=["SHARED"])
-    manager_cfg = ManagerConfig(requires_env=["SLURM_AGENT_SMTP_PASSWORD"])
+    manager_cfg = ManagerConfig(requires_env=["SLURM_AGENT_TEST_KEY"])
 
     keys = declared_env_keys(manager_cfg, [agent_a, agent_b])
-    assert keys == ["HF_TOKEN", "SHARED", "SLURM_AGENT_SMTP_PASSWORD"]
+    assert keys == ["HF_TOKEN", "SHARED", "SLURM_AGENT_TEST_KEY"]
 
     env = {"HF_TOKEN": "hf_real", "SHARED": SECRET_PLACEHOLDER}
-    assert missing_env(keys, env) == ["SHARED", "SLURM_AGENT_SMTP_PASSWORD"]
+    assert missing_env(keys, env) == ["SHARED", "SLURM_AGENT_TEST_KEY"]
     assert missing_env(keys, {k: "set" for k in keys}) == []
 
     display({"declared": keys, "missing": missing_env(keys, env)})

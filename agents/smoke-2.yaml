@@ -1,0 +1,60 @@
+# The second of the two trial tasks. Identical to `smoke.yaml` in every way that costs
+# money, and different in one: its own workdir.
+#
+# It does NOT declare a mode. How a task runs — a step on a shared interactive allocation,
+# or its own batch job — is the manager's call at launch time, made from what the task
+# actually needs, and `poe agent-run` / `poe agent-batch` is where that call is expressed.
+# Baking it in here would take the decision away from the only party that can see how busy
+# the cluster is.
+#
+# The separate workdir is not tidiness. `stage()` runs `git fetch` and `checkout --detach`
+# in the workdir, so two launches racing in one checkout is the kind of failure that looks
+# like a cluster problem for an hour. Neither half writes to the repo — their notebooks go
+# under the run root — but they do both stage it.
+#
+repo: DeanLight/slurm-agent
+# `main`, because nothing here creates a branch. These tasks only READ what they stage —
+# their notebooks go under the run root — so the ref just has to be one that always exists.
+# A ref naming a branch somebody has to create first is a setup step with no payoff.
+ref: main
+workdir: ~/work/slurm-agent-smoke-2
+
+# Under the RUN ROOT, not the repo. A smoke run has a deliverable — a notebook proving a
+# GPU answered — but it has no business in anyone's git history, and a notebook left in the
+# staged tree would make the next launch refuse a dirty workdir. `{RUN_DIR}` puts it beside
+# the launch record instead, where `poe agent-logs` reads it and `poe flush` removes it.
+log_dir: "{RUN_DIR}/evidence"
+
+# A smoke test that needs a credential has two ways to fail.
+requires_env: []
+
+# The small brief, not the experiment brief: no Notion, no exploration, five steps.
+prompt: smoke.md.jinja
+
+skills: []
+mcp: []
+
+# No git. The smoke agent writes one file under its run root and stops — it has no reason
+# to touch a repo, and not giving it the tools is how that is guaranteed rather than hoped.
+allowed_tools:
+  - Read
+  - Write
+  - Edit
+  - "Bash(python3 *)"
+  - "Bash(nvidia-smi *)"
+  - "Bash(mkdir *)"
+  - "Bash(date *)"
+
+# Two minutes of work. If this ever approaches a dollar, something is wrong and the cap is
+# the thing that tells you.
+max_budget_usd: 1
+
+# Claims no GPU of its own: it reads one line out of nvidia-smi and writes a file.
+# That is what lets both halves — and anything else small — share ONE interactive
+# allocation as job steps, on a cluster that permits one interactive job at a time.
+gpus: 0
+
+mode: interactive
+lease: "00:30:00"
+max_leases: 1
+batch_time: "00:30:00"

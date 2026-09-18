@@ -1,8 +1,11 @@
 # Cadence and thresholds for the scheduled usage digest.
-# Channels and recipients live in config/notify.yaml — the digest is not the only sender.
+#
+# It records; it does not deliver. Every poll appends to `usage.jsonl` under the run root
+# on the cluster, and the manager reads that with `poe spend` when you ask what something
+# cost. A cron entry has nobody to talk to; the manager does.
 every_days: 3
 
-# Silence has to mean "nothing changed", so a message always means something did.
+# Silence has to mean "nothing changed", so a recorded digest always means something did.
 only_if_changed: true
 
 budget_used_pct: 80

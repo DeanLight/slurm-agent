@@ -6,7 +6,7 @@
 #       extension: .py
 #       format_name: percent
 #       format_version: '1.3'
-#       jupytext_version: 1.16.0
+#       jupytext_version: 1.19.5
 #   kernelspec:
 #     display_name: Python 3
 #     language: python
@@ -138,8 +138,13 @@ def render(template: str, **context: object) -> str:
 
 def launch_prompt(agent: AgentConfig, *, task: str, log_dir: str, run_dir: str,
                   sha: str) -> str:
-    """The launch prompt: the task, the log directory, and the mailbox contract."""
-    return render("agent_launch.md.jinja", task=task, repo=agent.repo, ref=agent.ref,
+    """The launch prompt: the task, the log directory, and the mailbox contract.
+
+    Which brief an agent gets is its own declared property, so the same launcher can put a
+    twelve-hour experiment agent and a two-minute smoke agent on the same allocation.
+    Every brief takes the same variables — that is what makes them interchangeable.
+    """
+    return render(agent.prompt, task=task, repo=agent.repo, ref=agent.ref,
                   sha=sha[:8], workdir=agent.workdir, log_dir=log_dir,
                   run_dir=run_dir, lease=agent.lease)
 
@@ -147,6 +152,21 @@ def launch_prompt(agent: AgentConfig, *, task: str, log_dir: str, run_dir: str,
 def _write_remote(run: Runner, path: str, content: str) -> None:
     """Write a file on the cluster via a quoted heredoc — no scp round trip."""
     run(f"cat > {path} <<'SLURM_AGENT_EOF'\n{content}\nSLURM_AGENT_EOF")
+
+
+def resolve_log_dir(agent: AgentConfig, run_dir: str, exp_id: str) -> str:
+    """Where this run's notebooks go, absolute.
+
+    `{EXP_ID}` keeps two runs of one agent out of each other's notebook. `{RUN_DIR}` is the
+    other case, and it is what lets an agent produce a deliverable without touching the
+    repo at all: a log dir under the run root leaves the staged tree clean, so the next
+    launch is not refused by work the last one did. An agent whose output belongs to the
+    repo — an experiment write-up — uses a path relative to the workdir, as before.
+    """
+    log_dir = agent.log_dir.replace("{EXP_ID}", exp_id)
+    if "{RUN_DIR}" in log_dir:
+        return log_dir.replace("{RUN_DIR}", run_dir.rstrip("/"))
+    return f"{agent.workdir.rstrip('/')}/{log_dir}"
 
 
 def prepare_run(agent: AgentConfig, task: str, run: Runner, cluster: ClusterConfig,
@@ -162,14 +182,11 @@ def prepare_run(agent: AgentConfig, task: str, run: Runner, cluster: ClusterConf
     quoted_dir = remote_path(run_dir)
     run(f"mkdir -p {quoted_dir}")
 
-    log_dir = agent.log_dir.replace("{EXP_ID}", exp_id or task.lower())
-    abs_log_dir = f"{agent.workdir.rstrip('/')}/{log_dir}"
+    abs_log_dir = resolve_log_dir(agent, run_dir, exp_id or task.lower())
 
     assets = files("slurm_agent") / "assets"
     _write_remote(run, f"{quoted_dir}/remote_status.py",
                   (assets / "remote_status.py").read_text())
-    _write_remote(run, f"{quoted_dir}/remote_notify.py",
-                  (assets / "remote_notify.py").read_text())
     _write_remote(run, f"{quoted_dir}/settings.json", render_asset(
         "hook_settings.json.jinja", run_dir=run_dir, log_dir=abs_log_dir))
     _write_remote(run, f"{quoted_dir}/launch.json", json.dumps({
@@ -186,6 +203,26 @@ def render_asset(name: str, **context: object) -> str:
     """Render a template that ships inside the package rather than in `prompts/`."""
     text = (files("slurm_agent") / "assets" / name).read_text()
     return Environment(undefined=StrictUndefined).from_string(text).render(**context)
+
+
+# %%
+if test():
+    # An agent that claims no GPU is never refused for capacity — that is what makes "two
+    # small tasks, one allocation" the default rather than a thing you have to argue for.
+    free = AgentConfig(repo="r", ref="main", workdir="~/work/x", log_dir="{RUN_DIR}/e",
+                       max_budget_usd=1, gpus=0)
+    assert free.gpus == 0
+
+    smoke_cfg = AgentConfig(repo="r", ref="main", workdir="~/work/x", max_budget_usd=1,
+                            log_dir="{RUN_DIR}/evidence")
+    # A run-root log dir is absolute and never joined to the workdir — that is what lets an
+    # agent produce a deliverable while leaving the staged tree clean.
+    assert resolve_log_dir(smoke_cfg, "/home/d/.slurm-agent/runs/4f2c", "smoke") == \
+        "/home/d/.slurm-agent/runs/4f2c/evidence"
+
+    exp_cfg = AgentConfig(repo="r", ref="main", workdir="~/work/x", max_budget_usd=1,
+                          log_dir="experiments/{EXP_ID}")
+    assert resolve_log_dir(exp_cfg, "/run/4f2c", "exp14") == "~/work/x/experiments/exp14"
 
 
 # %%
@@ -235,7 +272,13 @@ if test():
 # %%
 def _detached(job_id: str, agent: AgentConfig, run_dir: str, argv: list[str]) -> str:
     """The one-liner that starts an agent as a job step and returns immediately."""
-    inner = " ".join(quote(a) for a in argv)
+    # `quote` alone would quote the tilde in a home-relative argument — `--settings`,
+    # `--mcp-config` and `--add-dir` all carry one — and the remote shell would receive it
+    # literally. `claude` then dies at launch with "Settings file not found: ~/...", having
+    # announced nothing, which reads like an agent that never started rather than a path
+    # bug. The body runs under `bash -lc`, so `"$HOME"` expands there exactly as it already
+    # does for the `cd` below.
+    inner = " ".join(remote_path(a) if a.startswith("~/") else quote(a) for a in argv)
     workdir = remote_path(agent.workdir)
     quoted_dir = remote_path(run_dir)
     body = (f"cd {workdir} && "
@@ -249,21 +292,31 @@ def _detached(job_id: str, agent: AgentConfig, run_dir: str, argv: list[str]) ->
 
 def launch(agent: AgentConfig, task: str, job_name: str, run: Runner,
            cluster: ClusterConfig, *, exp_id: str | None = None,
-           gpus_needed: int = 1) -> str:
-    """Stage, preflight and start a Claude agent on an allocation. Returns the session id."""
+           gpus_needed: int | None = None) -> str:
+    """Stage, preflight and start a Claude agent on an allocation. Returns the session id.
+
+    How many GPUs an agent claims is its own declared property. An agent that claims none
+    is never refused, which is the whole point: several small tasks belong as steps on one
+    allocation, not as several allocations on a cluster that permits one interactive job.
+    """
+    gpus_needed = agent.gpus if gpus_needed is None else gpus_needed
     job = find_job(job_list(run), job_name)
     if not job or job.state != "R":
         raise LookupError(f"no running allocation named {job_name!r} — try `poe job-up`")
 
     live = _agents_on(job.job_id, run)
-    if job.gpus - len(live) * gpus_needed < gpus_needed:
+    # Conservative on purpose: every live agent is assumed to claim as much as this one.
+    # Over-counting costs a refusal you can read and act on; under-counting costs two
+    # agents fighting over one device, hours later, looking like a cluster fault.
+    if gpus_needed and job.gpus - len(live) * gpus_needed < gpus_needed:
         raise ContentionError(
-            f"allocation {job_name!r} has {job.gpus} gpu and {len(live)} agent(s) on it. "
-            "Size it larger, or use `poe agent-batch` — batch jobs are not capped."
+            f"allocation {job_name!r} has {job.gpus} gpu and {len(live)} agent(s) on it, "
+            f"and {agent.repo} claims {gpus_needed}. Size it larger with `poe job-up "
+            "--gpus`, declare `gpus: 0` if it needs none, or use `poe agent-batch`."
         )
 
     session_id, run_dir, sha = prepare_run(agent, task, run, cluster, exp_id)
-    log_dir = agent.log_dir.replace("{EXP_ID}", exp_id or task.lower())
+    log_dir = resolve_log_dir(agent, run_dir, exp_id or task.lower())
     prompt = launch_prompt(agent, task=task, log_dir=log_dir, run_dir=run_dir, sha=sha)
     argv = claude_argv(
         agent, prompt=prompt, session_id=session_id,
@@ -278,10 +331,38 @@ def launch(agent: AgentConfig, task: str, job_name: str, run: Runner,
     return session_id
 
 
+# `%i` rather than `--Format=StepID:|`. The `|` there was meant as a literal field suffix
+# and reached the REMOTE shell unquoted, where it is a pipe: every launch onto a live
+# allocation died on `syntax error: unexpected end of file`, which reads like a cluster
+# fault and is not one. Anything with shell meaning must be quoted before it crosses ssh —
+# the same rule as `$HOME` vs `~`, in the other direction.
+STEP_FORMAT = "%i"
+
+
 def _agents_on(job_id: str, run: Runner) -> list[str]:
     """Step ids already running on this allocation — how many agents are sharing it."""
-    out = run(f"squeue --job={quote(job_id)} --steps --noheader --Format=StepID:|")
-    return [line.strip().rstrip("|") for line in out.splitlines() if line.strip()]
+    out = run(f"squeue --job={quote(job_id)} --steps --noheader "
+              f"--format={quote(STEP_FORMAT)}")
+    return [line.strip() for line in out.splitlines() if line.strip()]
+
+
+# %%
+if test():
+    # The bug this cost: a literal `|` in a remote command is a PIPE on the far side, so
+    # every launch onto a live allocation died with `syntax error: unexpected end of file`.
+    from tests.conftest import FakeRunner as _Fake
+
+    steps = _Fake({"squeue --job": "295750.0\n295750.1\n"})
+    assert _agents_on("295750", steps) == ["295750.0", "295750.1"]
+    asked = steps.commands[0]
+    # The real test is what the REMOTE shell would make of it: splitting it must give back
+    # exactly the words we meant, with no operator among them. `%` has no shell meaning, so
+    # `shlex.quote` rightly leaves it bare; `|` does, and that is what bit.
+    import shlex
+
+    assert shlex.split(asked) == ["squeue", "--job=295750", "--steps", "--noheader",
+                                  "--format=%i"], asked
+    assert not any(ch in asked for ch in "|;&<>"), f"a shell operator crosses ssh: {asked}"
 
 
 def continue_run(session_id: str, job_name: str, run: Runner, cluster: ClusterConfig,
@@ -384,7 +465,7 @@ def launch_batch(agent: AgentConfig, task: str, run: Runner, cluster: ClusterCon
                  gpus: int = 1, cpus: int = 8, mem: str = "200G") -> tuple[str, str]:
     """Submit the same agent as an sbatch job. Returns (session_id, job_id)."""
     session_id, run_dir, sha = prepare_run(agent, task, run, cluster, exp_id)
-    log_dir = agent.log_dir.replace("{EXP_ID}", exp_id or task.lower())
+    log_dir = resolve_log_dir(agent, run_dir, exp_id or task.lower())
     prompt = launch_prompt(agent, task=task, log_dir=log_dir, run_dir=run_dir, sha=sha)
     argv = claude_argv(
         agent, prompt=prompt, session_id=session_id,

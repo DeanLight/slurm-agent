@@ -10,6 +10,7 @@ dependencies = [
     "juplit>=0.1.0",
     "pydantic>=2.6",
     "pyyaml>=6.0",
+    "rich>=15.0.0",
     "structlog>=24.1",
 ]
 
@@ -47,7 +48,10 @@ clean        = {cmd = "juplit clean",help = "Sync then delete all .ipynb files"}
 test         = {cmd = "pytest",      help = "Run tests"}
 check        = {cmd = "juplit check", help = "Fail if a committed notebook's outputs contradict its .py"}
 html         = {cmd = "juplit html",  help = "Render a notebook to standalone HTML"}
-skill        = {shell = "mkdir -p .claude/skills && juplit skill > .claude/skills/juplit-programming.md && echo 'wrote .claude/skills/juplit-programming.md'", help = "Install/refresh the juplit skill for Claude Code"}
+# Claude Code discovers project skills as `.claude/skills/<name>/SKILL.md` — a DIRECTORY
+# each. A flat `.claude/skills/<name>.md` is silently never loaded, which looks exactly
+# like a skill that exists and is being ignored.
+skill        = {shell = "mkdir -p .claude/skills/juplit-programming && juplit skill > .claude/skills/juplit-programming/SKILL.md && echo 'wrote .claude/skills/juplit-programming/SKILL.md'", help = "Install/refresh the juplit skill for Claude Code"}
 docs         = {cmd = "mkdocs serve", help = "Serve docs locally for preview"}
 docs-build   = {cmd = "mkdocs build", help = "Build docs site"}
 docs-deploy  = {cmd = "mkdocs gh-deploy --force", help = "Deploy docs to GitHub Pages"}
@@ -77,12 +81,33 @@ status       = {cmd = "slurm-agent status", help = "What is running, queued, com
 flush        = {cmd = "slurm-agent flush", help = "Drop finished runs from status"}
 
 # ── notifications and usage ─────────────────────────────────────────────────────
-notify-test       = {cmd = "slurm-agent notify-test", help = "Really send one message per channel"}
-monitor-run       = {cmd = "slurm-agent monitor-run", help = "Poll usage; send only if spend moved"}
+spend             = {cmd = "slurm-agent spend", help = "What the scheduled polls recorded about cost"}
+monitor-run       = {cmd = "slurm-agent monitor-run", help = "Poll usage; record only if spend moved"}
 monitor-install   = {cmd = "slurm-agent monitor-install", help = "Install the digest schedule here"}
 monitor-uninstall = {cmd = "slurm-agent monitor-uninstall", help = "Remove the digest schedule"}
 monitor-status    = {cmd = "slurm-agent monitor-status", help = "Is the schedule on, and when does it fire"}
 session-new       = {cmd = "slurm-agent session-new", help = "Scaffold a session artifact notebook"}
+
+# ── the manager session ─────────────────────────────────────────────────────────
+# `poe manage "Pick up T2-132 on Tillicum"` is the entry point for everything the manager
+# does: spinning work up, asking how it is going, reporting what it cost. One command, so
+# there is one thing to learn and one conversation to come back to.
+#
+# It configures NOTHING. `CLAUDE.md`, the skill, `.mcp.json` and `.claude/settings.json` are
+# what make a session in this directory the manager, and a bare `claude` here is still
+# exactly that. `slurm_agent/manage.py` adds only what lives on a command line and cannot be
+# checked in: the Remote Control name, resume, and your first message.
+#
+# It is a `cmd` task, and that is load-bearing. A poe SHELL task runs the interpreter with
+# the script body on stdin, so the child's stdin is a pipe — `exec claude` inherits it,
+# finds no terminal, and silently gives you something that is not a conversation. A `cmd`
+# task inherits the real terminal on both ends.
+#
+# When `config/manager.yaml` names a `host`, the same command becomes the hop that reaches
+# it — mosh, then `tmux new -As` — so what you type does not change with where you are.
+# `--shell` gets you a prompt there instead, which is how you restart it or run `poe hc`.
+manage            = {cmd = "slurm-agent manage", help = "Talk to the manager: spin work up, ask how it is going, report the cost"}
+
 
 [tool.juplit]
 notebook_src_dirs = ["slurm_agent", "docs"]
@@ -91,9 +116,11 @@ notebook_src_dirs = ["slurm_agent", "docs"]
 # deliverable (experiment notebooks). Their outputs survive nb / sync / clean, and
 # `juplit check` fails if they stop matching the .py that produced them.
 # Remember to un-ignore each one in .gitignore — see the comment there.
-# None. A session's record belongs in the repo the agents worked on, alongside the
-# experiment it is about — this control plane commits no notebooks of its own.
-artifact_notebooks = []
+# A session's record belongs in the repo the agents worked on, alongside the experiment it
+# is about, so no session notebook is listed here. The quick start is the one exception and
+# a different kind of thing: it is not a record of an experiment, it is the setup procedure
+# for this repo, and its outputs are what tell you a fresh clone actually works.
+artifact_notebooks = ["docs/quickstart.py"]
 
 [tool.jupytext]
 formats = "ipynb,py:percent"

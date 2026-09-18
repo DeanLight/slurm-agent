@@ -1,0 +1,55 @@
+# The smoke agent: proves the whole path works, for a few cents.
+#
+# It is a real agent by every measure the orchestrator cares about — it stages a repo,
+# reports rounds through the shim, is watched by the same hooks and killed by the same
+# rules — and it is deliberately the smallest such thing that can exist. `poe hc` proves
+# the wiring; this proves the wiring *carries an agent*.
+#
+# Nothing here is a secret. `requires_env` is empty on purpose: a sanity check that needs
+# a token has two ways to fail, and you learn less from either.
+repo: DeanLight/slurm-agent
+# `main`, because nothing here creates a branch. These tasks only READ what they stage —
+# their notebooks go under the run root — so the ref just has to be one that always exists.
+# A ref naming a branch somebody has to create first is a setup step with no payoff.
+ref: main
+workdir: ~/work/slurm-agent-smoke
+
+# Under the RUN ROOT, not the repo. A smoke run has a deliverable — a notebook proving a
+# GPU answered — but it has no business in anyone's git history, and a notebook left in the
+# staged tree would make the next launch refuse a dirty workdir. `{RUN_DIR}` puts it beside
+# the launch record instead, where `poe agent-logs` reads it and `poe flush` removes it.
+log_dir: "{RUN_DIR}/evidence"
+
+# A smoke test that needs a credential has two ways to fail.
+requires_env: []
+
+# The small brief, not the experiment brief: no Notion, no exploration, five steps.
+prompt: smoke.md.jinja
+
+skills: []
+mcp: []
+
+# No git. The smoke agent writes one file under its run root and stops — it has no reason
+# to touch a repo, and not giving it the tools is how that is guaranteed rather than hoped.
+allowed_tools:
+  - Read
+  - Write
+  - Edit
+  - "Bash(python3 *)"
+  - "Bash(nvidia-smi *)"
+  - "Bash(mkdir *)"
+  - "Bash(date *)"
+
+# Two minutes of work. If this ever approaches a dollar, something is wrong and the cap is
+# the thing that tells you.
+max_budget_usd: 1
+
+# Claims no GPU of its own: it reads one line out of nvidia-smi and writes a file.
+# That is what lets both halves — and anything else small — share ONE interactive
+# allocation as job steps, on a cluster that permits one interactive job at a time.
+gpus: 0
+
+mode: interactive
+lease: "00:30:00"
+max_leases: 1
+batch_time: "00:30:00"

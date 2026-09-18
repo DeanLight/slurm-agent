@@ -1,4 +1,12 @@
 {
+  "_comment": [
+    "Shipped to the CLUSTER. `launch.py` copies this into a run root and points a remote",
+    "agent at it with --mcp-config --strict-mcp-config, so an agent reaches these servers",
+    "and nothing else. Which of them a given agent gets is its `mcp:` list.",
+    "",
+    "The LAPTOP manager uses `.mcp.json` at the repo root instead — Claude Code reads that",
+    "one by itself, which is what makes a bare `claude` here the manager."
+  ],
   "mcpServers": {
     "notion": {
       "type": "http",

@@ -6,7 +6,7 @@
 #       extension: .py
 #       format_name: percent
 #       format_version: '1.3'
-#       jupytext_version: 1.16.0
+#       jupytext_version: 1.19.5
 #   kernelspec:
 #     display_name: Python 3
 #     language: python
@@ -16,9 +16,13 @@
 # %% [markdown]
 # # The usage monitor
 #
-# A scheduled job that polls spend, keeps a ledger, and **speaks only when it has
-# something to say**. Silence has to mean "nothing changed", so a message always means
-# something did.
+# A scheduled job that polls spend, keeps a ledger on the cluster, and **records only
+# when it has something to say**. Silence has to mean "nothing changed", so an entry
+# always means something did.
+#
+# It writes; it does not deliver. The manager reads the ledger with `poe spend` and tells
+# you, which is why there is no sender here: the manager is the channel, and it is the
+# one already in a conversation with you.
 #
 # It **reports and never acts**. Kill authority belongs to the manager alone; this is a
 # cron entry nobody is watching, and a cron entry that can spend money is the thing the
@@ -35,8 +39,8 @@ import structlog
 from IPython.display import display
 from juplit import test
 
-from slurm_agent.config import MonitorConfig
-from slurm_agent.remote import Runner
+from slurm_agent.config import ClusterConfig, MonitorConfig
+from slurm_agent.remote import Runner, remote_path
 
 log = structlog.get_logger(__name__)
 
@@ -92,36 +96,87 @@ if test():
 
 
 # %% [markdown]
-# ## The ledger and the digest
+# ## The ledger, on the cluster
 #
-# The comparison is against the last row that was actually **sent**, not the last one
-# observed — otherwise three unsent polls in a row would hide a change that happened
+# The digest is written where every other fact this repo reports lives: the shared
+# filesystem, under the run root. That is the one rule, and it is not ceremony here — the
+# cron entry and the manager are different processes waking on different schedules, and a
+# laptop-local ledger would mean a reinstall loses the spend history and two sessions
+# disagree about it.
+#
+# The poll already ssh's in to run `hyakusage`, so writing the answer back costs one more
+# command and no new dependency. When the tunnel is down nothing is polled and nothing is
+# written, and the gap in the file is an honest record of that rather than a lie about
+# spend not moving.
+#
+# The comparison is against the last row that was actually a **digest**, not the last one
+# observed — otherwise three quiet polls in a row would hide a change that happened
 # across them.
 
 # %%
-def append(ledger_path: Path | str, row: dict) -> None:
+def ledger_path(cluster: ClusterConfig) -> str:
+    """Where the digest lives: beside the runs, on the cluster."""
+    return f"{str(cluster.run_root).rstrip('/')}/usage.jsonl"
+
+
+def append(run: Runner, path: str, row: dict) -> None:
     """Append one observation. JSONL: append-only, no database, readable with `tail`."""
-    path = Path(ledger_path)
-    path.parent.mkdir(parents=True, exist_ok=True)
-    with path.open("a") as handle:
-        handle.write(json.dumps(row, sort_keys=True) + "\n")
+    line = json.dumps(row, sort_keys=True)
+    parent = path.rsplit("/", 1)[0]
+    run(f"mkdir -p {remote_path(parent)} && cat >> {remote_path(path)} "
+        f"<<'SLURM_AGENT_EOF'\n{line}\nSLURM_AGENT_EOF")
 
 
-def rows(ledger_path: Path | str) -> list[dict]:
-    path = Path(ledger_path)
-    if not path.exists():
-        return []
-    return [json.loads(line) for line in path.read_text().splitlines() if line.strip()]
+def rows(run: Runner, path: str) -> list[dict]:
+    """Every observation, oldest first. A missing ledger is an empty one, not an error."""
+    raw = run(f"cat {remote_path(path)} 2>/dev/null || true")
+    out: list[dict] = []
+    for line in raw.splitlines():
+        if not line.strip():
+            continue
+        try:
+            out.append(json.loads(line))
+        except ValueError:
+            # A half-written line from an append that died mid-flight loses one reading.
+            # Refusing to read the other four hundred would be the worse failure.
+            continue
+    return out
 
 
-def last_sent(ledger_path: Path | str) -> dict | None:
-    return next((r for r in reversed(rows(ledger_path)) if r.get("sent")), None)
+def last_digest(history: list[dict]) -> dict | None:
+    return next((r for r in reversed(history) if r.get("digest")), None)
 
 
-def digest(current: dict, ledger_path: Path | str, cfg: MonitorConfig,
+# %%
+if test():
+    from tests.conftest import FakeRunner as _FR
+
+    writer = _FR({})
+    append(writer, "~/.slurm-agent/usage.jsonl", {"usage": {}, "digest": True})
+    command = writer.commands[0]
+    # `~` never crosses the ssh boundary: shlex.quote would quote it and the remote shell
+    # would take it literally, writing a directory named `~` in the home directory.
+    assert "~" not in command and '"$HOME"/.slurm-agent' in command
+    assert command.startswith("mkdir -p ") and "cat >> " in command
+    display(command)
+
+    # A ledger that is not there yet reads as empty, because the first poll is normal.
+    assert rows(_FR({}), "~/x.jsonl") == []
+    ledger = _FR({"cat": '{"observed_at": "a", "digest": false}\n'
+                         '{"observed_at": "b", "digest": true}\n'
+                         '{ this line was half written\n'})
+    history = rows(ledger, "~/x.jsonl")
+    assert len(history) == 2 and last_digest(history)["observed_at"] == "b"
+
+
+# %%
+def digest(current: dict, previous: dict | None, cfg: MonitorConfig,
            batch: list[dict] | None = None) -> str | None:
-    """The message to send, or None when there is nothing to say."""
-    previous = last_sent(ledger_path)
+    """The entry to record, or None when there is nothing to say.
+
+    Pure: it is handed the last digest row rather than going and finding it, so the
+    interesting cases below are three lines of dicts instead of a temporary directory.
+    """
     prior = (previous or {}).get("usage", {})
     changed = prior != current
 
@@ -157,52 +212,45 @@ def digest(current: dict, ledger_path: Path | str, cfg: MonitorConfig,
 
 # %%
 if test():
-    import tempfile
-
     cfg = MonitorConfig()
     now = {"safedesign": {"used_usd": 412.30, "limit_usd": 900.0,
                           "used_gpu_hours": 458.11, "limit_gpu_hours": 1000.0}}
 
-    with tempfile.TemporaryDirectory() as tmp:
-        ledger = Path(tmp) / "ledger.jsonl"
-        body = digest(now, ledger, cfg)
-        assert body and "412.30" in body           # first poll always has news
-        display(body)
+    body = digest(now, None, cfg)
+    assert body and "412.30" in body           # the first poll always has news
+    display(body)
 
-        append(ledger, {"observed_at": "2026-08-22", "usage": now, "sent": True})
-        # Unchanged spend says nothing at all.
-        assert digest(now, ledger, cfg) is None
+    # Unchanged spend says nothing at all.
+    assert digest(now, {"observed_at": "2026-08-22", "usage": now, "digest": True},
+                  cfg) is None
 
 
 # %%
 if test():
-    with tempfile.TemporaryDirectory() as tmp:
-        ledger = Path(tmp) / "ledger.jsonl"
-        append(ledger, {"observed_at": "2026-08-22", "usage": now, "sent": True})
-        moved = {"safedesign": dict(now["safedesign"], used_usd=498.30)}
-        # Three unsent polls in between must not hide the change.
-        for day in ("23", "24", "25"):
-            append(ledger, {"observed_at": f"2026-08-{day}", "usage": moved, "sent": False})
-        body = digest(moved, ledger, cfg)
-        assert body and "+86.00" in body and "since 2026-08-22" in body
-        display(body)
+    # Three quiet polls in between must not hide the change: the baseline is the last
+    # DIGEST row, which is why `last_digest` skips the others rather than taking the tail.
+    moved = {"safedesign": dict(now["safedesign"], used_usd=498.30)}
+    history = [{"observed_at": "2026-08-22", "usage": now, "digest": True}]
+    history += [{"observed_at": f"2026-08-{d}", "usage": moved, "digest": False}
+                for d in ("23", "24", "25")]
+    body = digest(moved, last_digest(history), cfg)
+    assert body and "+86.00" in body and "since 2026-08-22" in body
+    display(body)
 
 
 # %%
 if test():
-    with tempfile.TemporaryDirectory() as tmp:
-        ledger = Path(tmp) / "ledger.jsonl"
-        hot = {"safedesign": dict(now["safedesign"], used_usd=800.0)}
-        append(ledger, {"observed_at": "x", "usage": hot, "sent": True})
-        # Flat spend, but over the budget threshold: still worth a message.
-        body = digest(hot, ledger, cfg)
-        assert body and "ALERT" in body and "89%" in body   # 800 of 900
+    hot = {"safedesign": dict(now["safedesign"], used_usd=800.0)}
+    previous = {"observed_at": "x", "usage": hot, "digest": True}
+    # Flat spend, but over the budget threshold: still worth recording.
+    body = digest(hot, previous, cfg)
+    assert body and "ALERT" in body and "89%" in body   # 800 of 900
 
-        # And batch news alone is enough to send.
-        flat = digest(hot, ledger, cfg, batch=[{"session_id": "9c03aaaa", "task": "T",
-                                                "job_state": "TIMEOUT"}])
-        assert flat and "TIMEOUT" in flat
-        display(flat)
+    # And batch news alone is enough.
+    flat = digest(hot, previous, cfg, batch=[{"session_id": "9c03aaaa", "task": "T",
+                                              "job_state": "TIMEOUT"}])
+    assert flat and "TIMEOUT" in flat
+    display(flat)
 
 
 # %% [markdown]
@@ -257,15 +305,15 @@ def cron_line(cfg: MonitorConfig, repo_root: Path | str) -> str:
     return (f"0 9 */{cfg.every_days} * * cd {repo_root} && uv run slurm-agent monitor-run")
 
 
-def cron_status(ledger_path: Path | str, current: str | None = None) -> str:
-    """Installed or not, when it last ran, when a digest was last sent."""
+def cron_status(run: Runner, path: str, current: str | None = None) -> str:
+    """Installed or not, when it last ran, when it last had something to say."""
     text = current if current is not None else _crontab(["-l"])
     installed = MARK_START in text
-    observed = rows(ledger_path)
-    sent = last_sent(ledger_path)
+    history = rows(run, path)
+    recorded = last_digest(history)
     return (f"{'installed' if installed else 'NOT installed'} · "
-            f"last ran {observed[-1]['observed_at'] if observed else 'never'} · "
-            f"last digest sent {sent['observed_at'] if sent else 'never'}")
+            f"last ran {history[-1]['observed_at'] if history else 'never'} · "
+            f"last digest {recorded['observed_at'] if recorded else 'never'}")
 
 
 # %%
@@ -290,55 +338,112 @@ if test():
     assert MARK_START not in removed
     assert removed.strip() == other.strip()
 
-    with tempfile.TemporaryDirectory() as tmp:
-        ledger = Path(tmp) / "ledger.jsonl"
-        append(ledger, {"observed_at": "2026-09-01", "usage": {}, "sent": False})
-        report = cron_status(ledger, current=once)
-        assert "installed" in report and "last ran 2026-09-01" in report
-        assert "last digest sent never" in report
-        display(report)
+    quiet = _FR({"cat": '{"observed_at": "2026-09-01", "usage": {}, "digest": false}\n'})
+    report = cron_status(quiet, "~/x.jsonl", current=once)
+    assert "installed" in report and "last ran 2026-09-01" in report
+    assert "last digest never" in report
+    display(report)
 
 
 # %%
-def monitor_run(run: Runner, cfg: MonitorConfig, ledger_path: Path | str, *,
-                dry_run: bool = False, batch: list[dict] | None = None,
-                send=None) -> str:
-    """The scheduled entry point: poll, append to the ledger, send only if there is news."""
+def monitor_run(run: Runner, cfg: MonitorConfig, path: str, *,
+                dry_run: bool = False, batch: list[dict] | None = None) -> str:
+    """The scheduled entry point: poll, append to the ledger, record only if there is news.
+
+    Every poll is written down, news or not, because "we looked and nothing had moved" and
+    "nobody looked" are different facts and the manager has to be able to tell them apart.
+    Only a row with news carries `digest: True`, and that is the baseline the next poll
+    compares against.
+    """
     current = usage(run)
-    observed_at = time.strftime("%Y-%m-%d")
-    body = digest(current, ledger_path, cfg, batch)
+    observed_at = time.strftime("%Y-%m-%d %H:%M")
+    previous = last_digest(rows(run, path))
+    body = digest(current, previous, cfg, batch)
     if body is None:
-        previous = last_sent(ledger_path) or {}
-        append(ledger_path, {"observed_at": observed_at, "usage": current, "sent": False})
+        append(run, path, {"observed_at": observed_at, "usage": current, "digest": False})
         return (f"spend unchanged since {previous.get('observed_at', 'the last digest')} "
-                "— nothing to send")
+                "— recorded the reading, nothing to report")
     if dry_run:
         return body
-    if send is not None:
-        send("[slurm-agent] usage digest", body)
-    append(ledger_path, {"observed_at": observed_at, "usage": current, "sent": True})
+    # The rendered body is stored, not just the numbers: `spend` shows the manager exactly
+    # what this poll saw, rather than a re-derivation that could drift from it.
+    append(run, path, {"observed_at": observed_at, "usage": current, "digest": True,
+                       "body": body})
     return body
 
 
 # %%
 if test():
-    with tempfile.TemporaryDirectory() as tmp:
-        ledger = Path(tmp) / "ledger.jsonl"
-        runner = FakeRunner({"hyakusage": sample})
-        sent_msgs: list[tuple] = []
+    class Ledger:
+        """A FakeRunner that actually accumulates what was appended to it."""
 
-        first = monitor_run(runner, cfg, ledger, send=lambda s, b: sent_msgs.append((s, b)))
-        assert "412.30" in first and len(sent_msgs) == 1
+        def __init__(self, hyakusage: str):
+            self.hyakusage, self.lines = hyakusage, []
 
-        # Second poll, unchanged: records the observation, sends nothing.
-        second = monitor_run(runner, cfg, ledger, send=lambda s, b: sent_msgs.append((s, b)))
-        assert "nothing to send" in second
-        assert len(sent_msgs) == 1
-        assert [r["sent"] for r in rows(ledger)] == [True, False]
-        display(second)
+        def __call__(self, command, stdin=None):
+            if command.startswith("hyakusage"):
+                return self.hyakusage
+            if "cat >> " in command:
+                _, _, rest = command.partition("<<'SLURM_AGENT_EOF'\n")
+                self.lines.append(rest.split("\nSLURM_AGENT_EOF")[0])
+                return ""
+            return "\n".join(self.lines)
 
-        # --dry-run never sends and never marks a row sent.
-        moved = FakeRunner({"hyakusage": sample.replace("412.30", "498.30")})
-        preview = monitor_run(moved, cfg, ledger, dry_run=True,
-                              send=lambda s, b: sent_msgs.append((s, b)))
-        assert "498.30" in preview and len(sent_msgs) == 1
+    ledger = Ledger(sample)
+    first = monitor_run(ledger, cfg, "~/.slurm-agent/usage.jsonl")
+    assert "412.30" in first
+    assert json.loads(ledger.lines[0])["digest"] is True
+
+    # Second poll, unchanged: records the reading, reports nothing.
+    second = monitor_run(ledger, cfg, "~/.slurm-agent/usage.jsonl")
+    assert "nothing to report" in second
+    assert [json.loads(r)["digest"] for r in ledger.lines] == [True, False]
+    display(second)
+
+    # --dry-run never writes and never marks a row a digest.
+    ledger.hyakusage = sample.replace("412.30", "498.30")
+    preview = monitor_run(ledger, cfg, "~/.slurm-agent/usage.jsonl", dry_run=True)
+    assert "498.30" in preview and len(ledger.lines) == 2
+
+
+# %% [markdown]
+# ## What the manager reads
+#
+# The cron entry writes and the manager speaks. `spend` is the seam between them: it
+# renders what the scheduled polls recorded, so "what has this cost so far" is answered
+# from readings taken while nobody was looking rather than from one taken this second.
+
+# %%
+def spend(run: Runner, path: str, *, limit: int = 3) -> str:
+    """The recorded digests, newest last — the manager's answer to "what has this cost"."""
+    history = rows(run, path)
+    if not history:
+        return ("no readings recorded yet — `poe monitor-install` schedules them, or "
+                "`poe monitor-run` takes one now")
+    recorded = [r for r in history if r.get("digest")]
+    out = [f"{len(history)} readings · {len(recorded)} with news · "
+           f"last poll {history[-1].get('observed_at', '?')}"]
+    for row in recorded[-limit:]:
+        out += ["", f"── {row.get('observed_at', '?')}",
+                row.get("body") or "(recorded before bodies were kept)"]
+    if not recorded:
+        out += ["", "spend has not moved since the readings began"]
+    return "\n".join(out)
+
+
+# %%
+if test():
+    assert "no readings recorded yet" in spend(_FR({}), "~/x.jsonl")
+
+    # Polls with no news still count, and still date the last look — silence that cannot
+    # say when it was last checked is indistinguishable from a cron entry that died.
+    quiet_only = _FR({"cat": '{"observed_at": "2026-09-01 09:00", "digest": false}\n'})
+    report = spend(quiet_only, "~/x.jsonl")
+    assert "1 readings · 0 with news" in report and "has not moved" in report
+
+    told = _FR({"cat": '{"observed_at": "2026-09-01 09:00", "digest": false}\n'
+                       '{"observed_at": "2026-09-04 09:00", "digest": true, '
+                       '"body": "safedesign  $498.30 (+86.00) of $900.00"}\n'})
+    report = spend(told, "~/x.jsonl")
+    assert "+86.00" in report and "2026-09-04" in report
+    display(report)

@@ -1,12 +1,49 @@
-# The local session's own settings — the mirror of agents/<kind>.yaml.
+# The manager session's own settings — the mirror of agents/<kind>.yaml.
 #
-# requires_env names the environment KEYS this session needs and never their values.
-# Values live in the gitignored .envrc; `poe healthcheck` reports which are missing.
-requires_env:
-  - SLURM_AGENT_SMTP_HOST
-  - SLURM_AGENT_SMTP_PORT
-  - SLURM_AGENT_SMTP_USER
-  - SLURM_AGENT_SMTP_PASSWORD
-  - SLURM_AGENT_SLACK_WEBHOOK
+# requires_env names environment KEYS this session needs and never their values. Values
+# live in the gitignored .envrc; `poe healthcheck` reports which are missing.
+#
+# It is EMPTY, and that is not an oversight. The manager's job is to talk to you, and it
+# does that by being a Claude Code session you are already talking to — on your phone too,
+# because `poe manage` passes `--remote-control`. There is no channel to hold a credential
+# for, so there is no key to declare. Put a key here only if the manager itself reads one.
+requires_env: []
 
 envrc: .envrc
+
+# ── Where the manager runs ──────────────────────────────────────────────────────
+#
+# `null` means "right here", which is what a fresh clone gets and what the tests assume.
+#
+# A LAPTOP IS THE WRONG HOME for a conversation that supervises twelve-hour runs. It
+# sleeps, it changes network, and every move restarts the session — so the manager forgets
+# the runs it launched, and a `--remote-control` link that was live on your phone goes
+# dead. Name a machine here and that stops being true: the manager lives there in a tmux
+# session, `poe manage` from any laptop reattaches to the SAME conversation, and moving
+# between networks is mosh's problem rather than yours.
+#
+# For UW CSE that machine is `barb`, the jump host in front of the cycle servers. It is
+# always on, reachable from anywhere, and — this is the part that matters — the machine
+# whose ssh key gets into klone WITHOUT 2FA. Copy your key there once and the manager can
+# reach Tillicum unattended, which your laptop never could.
+#
+#     host: barb
+#
+# It is left unset here because a committed config must not name a machine a fork cannot
+# reach, for the same reason no shipped agent names a private repo. Set it in your clone,
+# or per-machine and without a dirty tree, with SLURM_AGENT_MANAGER_HOST in .envrc.
+#
+# If barb turns out to be too small to hold a Claude session, the cycle servers behind it
+# (recycle, bicycle, tricycle — 96 CPUs, 512 GB) are the same hop and take the same value.
+host: null
+
+# Where this repo is cloned ON THAT MACHINE, and the tmux session that holds the manager.
+# Both are ignored when `host` is null. `~` is fine here: it is expanded by a login shell
+# on the far side, never shell-quoted across an ssh boundary.
+workdir: ~/src/slurm-agent
+tmux_session: manager
+
+# mosh survives a changed IP, which is the whole point: close the lid in one building and
+# open it in another, and the session is still there. `ssh` is the fallback when mosh is
+# not installed or UDP 60000-61000 is blocked.
+transport: mosh

@@ -1,0 +1,18 @@
+{
+  "_comment": [
+    "Project MCP servers. Claude Code reads this automatically when you run `claude` from",
+    "the repo root, which is why the manager can reach Notion without being told to.",
+    "NO SECRETS HERE: these are urls, and each server authenticates interactively the first",
+    "time you use it. `.claude/settings.json` enables them without a prompt."
+  ],
+  "mcpServers": {
+    "notion": {
+      "type": "http",
+      "url": "https://mcp.notion.com/mcp"
+    },
+    "github": {
+      "type": "http",
+      "url": "https://api.githubcopilot.com/mcp/"
+    }
+  }
+}

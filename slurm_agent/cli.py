@@ -8,6 +8,7 @@ the same surface a human does.
 """
 
 import os
+from typing import Annotated
 
 import cyclopts
 
@@ -17,7 +18,6 @@ from slurm_agent.config import (
     ManagerConfig,
     MonitorConfig,
     SupervisionConfig,
-    declared_env_keys,
     load,
 )
 
@@ -34,39 +34,35 @@ def _runner():
     return ssh_runner(_cluster().login_host)
 
 
-LEDGER = "ledger.jsonl"
+def _ledger() -> str:
+    """The usage ledger, on the cluster — the cron entry writes it, the manager reads it."""
+    from slurm_agent import monitor
+
+    return monitor.ledger_path(_cluster())
 
 
-def _notifier():
-    """A `send(subject, body)` bound to the configured channels, or None if unconfigured."""
-    from slurm_agent.notify import NotifyConfig, notify
+def _task_config():
+    """config/tasks.yaml — the Notion database work is grounded in."""
+    from slurm_agent.tasks import TaskConfig
 
-    cfg = load("config/notify.yaml", NotifyConfig)
-    keys = declared_env_keys(load("config/manager.yaml", ManagerConfig), [])
-    return lambda subject, body: notify(subject, body, cfg, keys)
+    return load("config/tasks.yaml", TaskConfig)
 
 
 def _manager() -> ManagerConfig:
     return load("config/manager.yaml", ManagerConfig)
 
 
-def _agents() -> list[AgentConfig]:
-    from pathlib import Path
+def _agents() -> dict[str, AgentConfig]:
+    """Every agents/<kind>.yaml, keyed by kind — the whole list of repos this clone manages."""
+    from slurm_agent.config import load_agents
 
-    return [load(p, AgentConfig) for p in sorted(Path("agents").glob("*.yaml"))]
-
-
-def _notify_test():
-    from slurm_agent import notify as notifier
-
-    cfg = load("config/notify.yaml", notifier.NotifyConfig)
-    return notifier.notify_test(cfg, declared_env_keys(_manager(), _agents()), run=_runner())
+    return load_agents()
 
 
 def _report(checks) -> None:
     from slurm_agent import preflight
 
-    print(preflight.render(checks))
+    preflight.print_report(checks)
     raise SystemExit(1 if any(c.ok is False for c in checks) else 0)
 
 
@@ -83,29 +79,64 @@ def _views():
     return snapshot, supervisor.views(snapshot, cluster), cluster, run
 
 
+# ── the manager session ──────────────────────────────────────────────────────────
+@app.command
+def manage(prompt: str = "",
+           print_: Annotated[bool, cyclopts.Parameter(name=["-p", "--print"])] = False,
+           shell: bool = False, here: bool = False) -> None:
+    """Talk to the manager: spin work up, ask how it is going, report what it cost."""
+    from slurm_agent import manage as manager
+
+    manager.manage(prompt, headless=print_, shell=shell, here=here, cfg=_manager())
+
+
+def _must_be_on_the_manager_host(what: str) -> None:
+    """`init` and `hc` describe the machine they run on, so they must run on the right one.
+
+    Checking a laptop and captioning it "the manager" is the failure this repo keeps coming
+    back to: a report that cannot say which machine it means. When the manager lives
+    elsewhere, the honest answer is one sentence saying how to get there — not a green
+    report about a machine that runs nothing.
+    """
+    from slurm_agent.manage import HOST_ENV, on_manager_host
+
+    cfg = _manager()
+    host = os.environ.get(HOST_ENV) or cfg.host
+    if on_manager_host(host):
+        return
+    raise SystemExit(
+        f"the manager lives on {host}, so `{what}` belongs there and would describe this "
+        f"machine instead.\n"
+        f"  poe manage --shell     a prompt on {host}, in {cfg.workdir}\n"
+        f"  poe manage             the conversation itself\n"
+        f"Set {HOST_ENV}= (empty) or `host: null` in config/manager.yaml to run here.")
+
+
 # ── setup ────────────────────────────────────────────────────────────────────────
 @app.command
-def init(send: bool = True) -> None:
+def init() -> None:
     """Create the local footprint, then run a full healthcheck."""
     from slurm_agent import preflight
 
+    _must_be_on_the_manager_host("poe init")
     cluster, manager, agents = _cluster(), _manager(), _agents()
     run = _runner()
-    for check in preflight.init(cluster, manager, agents, run):
-        print(f"{check.name:<24} {check.detail}")
-    print()
-    _report(preflight.healthcheck(cluster, manager, agents, run, full=True, send=send,
-                                  notify_test=_notify_test if send else None))
+    # Create, then report ONCE. `init` returns notes rather than a report of its own,
+    # because creating and checking the same three files produced two sections saying the
+    # same things — and a creation failure got told twice, the first time in ssh's words.
+    created = preflight.init(cluster, manager, agents, run)
+    _report(preflight.healthcheck(cluster, manager, agents, run, full=True,
+                                  tasks=_task_config(), created=created))
 
 
 @app.command
-def healthcheck(full: bool = False, send: bool = False) -> None:
+def healthcheck(full: bool = False) -> None:
     """Is everything wired and working? Fast by default; `--full` adds the slow proofs."""
     from slurm_agent import preflight
 
+    _must_be_on_the_manager_host("poe hc")
     _report(preflight.healthcheck(_cluster(), _manager(), _agents(), _runner(),
-                                  full=full, send=send,
-                                  notify_test=_notify_test if send else None))
+                                  full=full, tasks=_task_config()))
 
 
 # ── allocations ──────────────────────────────────────────────────────────────────
@@ -296,29 +327,22 @@ def flush(older_than: str = "7d", failed: bool = False, session: str | None = No
         print("failed runs kept — their agent.err is the only record of why they died")
 
 
-# ── notifications and usage ──────────────────────────────────────────────────────
-@app.command(name="notify-test")
-def notify_test() -> None:
-    """Really send one message per channel, from here and from the cluster."""
-    from slurm_agent import notify as notifier
-    from slurm_agent.config import ManagerConfig, declared_env_keys
+# ── usage ────────────────────────────────────────────────────────────────────────
+@app.command
+def spend(limit: int = 3) -> None:
+    """What the scheduled polls have recorded about cost. The manager reads this."""
+    from slurm_agent import monitor
 
-    cfg = load("config/notify.yaml", notifier.NotifyConfig)
-    manager = load("config/manager.yaml", ManagerConfig)
-    rows = notifier.notify_test(cfg, declared_env_keys(manager, []), run=_runner())
-    for where, ok, detail in rows:
-        print(f"{where:<9} {'ok' if ok else 'FAILED':<7} {detail}")
-    raise SystemExit(0 if all(ok for _, ok, _ in rows) else 1)
+    print(monitor.spend(_runner(), _ledger(), limit=limit))
 
 
 @app.command(name="monitor-run")
 def monitor_run(dry_run: bool = False) -> None:
-    """Poll usage and send the digest, but only if spend actually moved."""
+    """Poll usage and record a digest, but only if spend actually moved."""
     from slurm_agent import monitor
 
     cfg = load("config/monitor.yaml", MonitorConfig)
-    send = None if dry_run else _notifier()
-    print(monitor.monitor_run(_runner(), cfg, LEDGER, dry_run=dry_run, send=send))
+    print(monitor.monitor_run(_runner(), cfg, _ledger(), dry_run=dry_run))
 
 
 @app.command(name="monitor-install")
@@ -339,7 +363,7 @@ def monitor_status() -> None:
     """Is the schedule on, when did it last fire, when does it fire next."""
     from slurm_agent import monitor
 
-    print(monitor.cron_status(LEDGER))
+    print(monitor.cron_status(_runner(), _ledger()))
 
 
 @app.command(name="monitor-uninstall")

@@ -1,0 +1,28 @@
+# The Notion Tasks database this repo grounds work in.
+#
+# A run is worth something because it is ABOUT a task, and the task carries the record
+# afterwards — so the manager reads or opens a task before it launches anything, and hands
+# the agent the id.
+#
+# NO secrets here, and no session settings either: what a manager session may reach lives
+# in `.mcp.json` and `.claude/settings.json` at the repo root, because that is where Claude
+# Code itself looks. This file says only WHICH database and WHAT an id looks like.
+
+# The data source the Tasks database lives in. Fetch the database through the Notion MCP
+# once to get this; it does not change.
+data_source: collection://1e2fab53-192e-41ac-af11-50f1b2ed8193
+
+# What a task id looks like, as a regex with exactly one group. It must be specific enough
+# not to match prose: `extract_ids` takes exactly the number asked for and refuses to guess,
+# because launching an agent against the wrong task is worse than not launching.
+id_pattern: '\b((?:TASK-|T\d-)\d+)\b'
+
+# Set on every task this repo opens, so a row is always attributable.
+defaults:
+  Project: slurm-agent
+
+# Shown to the manager when it files a row, so it fills in the same fields every time
+# rather than inventing a schema per run.
+notes: >-
+  Link the spec if there is one, and say which repo and branch the work belongs to —
+  an agent reads this row to find out what to do and where.

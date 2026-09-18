@@ -6,7 +6,7 @@
 #       extension: .py
 #       format_name: percent
 #       format_version: '1.3'
-#       jupytext_version: 1.16.0
+#       jupytext_version: 1.19.5
 #   kernelspec:
 #     display_name: Python 3
 #     language: python
@@ -319,10 +319,9 @@ def act(decision: Decision, view: AgentView, run: Runner, cluster: ClusterConfig
     if decision.action == "escalate":
         key = (view.session_id, decision.detail)
         if key in notified:
-            return f"{tag} escalate (already sent) {decision.detail}"
+            return f"{tag} escalate (already raised) {decision.detail}"
         notified.add(key)
-        _escalate(view, decision, cluster)
-        return f"{tag} ESCALATE {decision.detail}"
+        return _escalate(view, decision, cluster)
 
     if decision.action == "renew":
         if not auto_renew:
@@ -337,19 +336,19 @@ def act(decision: Decision, view: AgentView, run: Runner, cluster: ClusterConfig
     return f"{tag} ok · {decision.detail}"
 
 
-def _escalate(view: AgentView, decision: Decision, cluster: ClusterConfig) -> None:
-    """Tell the human. Never lets a notification failure take the loop down with it."""
-    try:
-        from slurm_agent.config import ManagerConfig, declared_env_keys, load
-        from slurm_agent.notify import NotifyConfig, notify
+def _escalate(view: AgentView, decision: Decision, cluster: ClusterConfig) -> str:
+    """Say it where the manager will see it, which is the loop's own output.
 
-        cfg = load("config/notify.yaml", NotifyConfig)
-        keys = declared_env_keys(load("config/manager.yaml", ManagerConfig), [])
-        notify(f"[slurm-agent] {view.task} needs you", 
-               f"{decision.detail}\nsession {view.session_id}\nrun dir {view.run_dir}\n",
-               cfg, keys)
-    except Exception as exc:  # noqa: BLE001 - a broken channel must not stop supervision
-        log.error("watch.escalate_failed", session=view.session_id, error=str(exc))
+    There is no sender here on purpose. The manager runs this loop and is the one in a
+    conversation with the human — a second channel would mean a supervision decision could
+    arrive by email while the session that made it said nothing, and the two would
+    disagree about what happened. Escalating IS the line the loop returns.
+    """
+    line = (f"NEEDS YOU  {view.task}  {decision.detail}  "
+            f"session {view.session_id}  run dir {view.run_dir}")
+    log.warning("watch.escalate", session=view.session_id, task=view.task,
+                detail=decision.detail, run_dir=view.run_dir)
+    return line
 
 
 def kill_step(view: AgentView, run: Runner, *, reason: str) -> str:
@@ -366,9 +365,18 @@ def kill_step(view: AgentView, run: Runner, *, reason: str) -> str:
     return target or ""
 
 
+# `%i|%j`, quoted. The old `--Format=StepID:|,Name:|` meant those pipes as literal field
+# suffixes and sent them to the REMOTE shell unquoted, where a pipe is a pipe: every kill
+# died on `syntax error: unexpected end of file`, and a kill that fails leaves an agent
+# burning an allocation. Same bug as `launch._agents_on`, found in the second place by a
+# smoke run rather than on a cluster.
+STEP_FORMAT = "%i|%j"
+
+
 def _step_of(view: AgentView, run: Runner) -> str | None:
     """The job step this agent occupies, so a kill does not take its neighbours down."""
-    out = run(f"squeue --job={quote(view.job_id)} --steps --noheader --Format=StepID:|,Name:|")
+    out = run(f"squeue --job={quote(view.job_id)} --steps --noheader "
+              f"--format={quote(STEP_FORMAT)}")
     for line in out.splitlines():
         fields = [f.strip() for f in line.split("|")]
         if len(fields) >= 2 and view.session_id[:8] in fields[1]:
